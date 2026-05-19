@@ -329,7 +329,7 @@ impl RaopRtp {
                 let mut packet_buf = Vec::with_capacity(RAOP_PACKET_LEN + 4);
                 let mut read_buf = [0u8; 4096];
 
-                loop {
+                'tcp: loop {
                     // Drain flush events only — metadata goes through AudioHandler now.
                     {
                         let mut st = state.lock().await;
@@ -346,10 +346,22 @@ impl RaopRtp {
                                 Ok(0) | Err(_) => break,
                                 Ok(n) => packet_buf.extend_from_slice(&read_buf[..n]),
                             }
+                            if packet_buf.len() > RAOP_PACKET_LEN * 4 {
+                                tracing::warn!("TCP RTP buffer exceeded safety limit");
+                                break;
+                            }
                             // TCP interleaved: each frame is `$ <channel> <len_hi> <len_lo> <rtp...>`.
                             while packet_buf.len() >= 4 {
-                                if packet_buf[0] != b'$' || packet_buf[1] != 0 { break; }
+                                if packet_buf[0] != b'$' || packet_buf[1] != 0 {
+                                    packet_buf.drain(..1);
+                                    continue;
+                                }
                                 let rtp_len = ((packet_buf[2] as usize) << 8) | packet_buf[3] as usize;
+                                if rtp_len > RAOP_PACKET_LEN {
+                                    tracing::warn!(rtp_len, "TCP RTP frame exceeded maximum size, closing");
+                                    packet_buf.clear();
+                                    break 'tcp;
+                                }
                                 if packet_buf.len() < 4 + rtp_len { break; }
                                 let mut buf = buffer.lock().await;
                                 buf.queue(&packet_buf[4..4 + rtp_len], false);

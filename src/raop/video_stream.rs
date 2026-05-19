@@ -12,6 +12,7 @@ use crate::crypto::video_cipher::VideoCipher;
 use crate::raop::video::{PacketKind, VideoPacket, VideoSession};
 
 const VIDEO_HEADER_LEN: usize = 128;
+const MAX_VIDEO_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
 
 /// Run the video stream receiver. Accepts one TCP connection and processes packets.
 pub async fn run(listener: TcpListener, cipher: VideoCipher, session: Box<dyn VideoSession>) {
@@ -45,6 +46,10 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
 
         if payload_len == 0 {
             continue;
+        }
+        if payload_len > MAX_VIDEO_PAYLOAD_LEN {
+            warn!(payload_len, "Video payload exceeds maximum allowed size");
+            break;
         }
 
         // Read payload

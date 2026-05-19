@@ -4,7 +4,7 @@ use super::connection::RaopShared;
 use super::types::*;
 use crate::crypto::pairing::Pairing;
 use crate::crypto::rsa::RsaKey;
-use crate::error::ShairplayError;
+use crate::error::{ServerError, ShairplayError};
 use crate::net::mdns::{AirPlayServiceInfo, MdnsService};
 use crate::net::server::{BindConfig, HttpServer};
 use std::sync::Arc;
@@ -16,6 +16,16 @@ fn airport_rsakey() -> Arc<RsaKey> {
     static KEY: OnceLock<Arc<RsaKey>> = OnceLock::new();
     KEY.get_or_init(|| Arc::new(RsaKey::from_pem(AIRPORT_KEY).expect("built-in airport.key is invalid")))
         .clone()
+}
+
+fn random_hwaddr() -> Vec<u8> {
+    use rand::RngCore;
+
+    let mut hwaddr = [0u8; super::MAX_HWADDR_LEN];
+    rand::thread_rng().fill_bytes(&mut hwaddr);
+    // Locally administered, unicast MAC address.
+    hwaddr[0] = (hwaddr[0] | 0x02) & !0x01;
+    hwaddr.to_vec()
 }
 
 /// Builder for [`RaopServer`].
@@ -142,9 +152,21 @@ impl RaopServerBuilder {
 
     /// Build the server with the given audio handler.
     pub fn build(self, handler: Arc<dyn AudioHandler>) -> Result<RaopServer, ShairplayError> {
+        if self.max_clients == 0 {
+            return Err(ServerError::MaxClients(0).into());
+        }
+        if let Some(password) = self.password.as_ref() {
+            if password.len() > super::MAX_PASSWORD_LEN {
+                return Err(ServerError::InvalidPassword(password.len()).into());
+            }
+        }
         let rsakey = airport_rsakey();
         let pairing = Arc::new(Pairing::generate()?);
-        let hwaddr = self.hwaddr.unwrap_or_else(|| vec![0x48, 0x5d, 0x60, 0x7c, 0xee, 0x22]);
+        let hwaddr = match self.hwaddr {
+            Some(addr) if addr.len() == super::MAX_HWADDR_LEN => addr,
+            Some(addr) => return Err(ServerError::InvalidHwAddr(addr.len()).into()),
+            None => random_hwaddr(),
+        };
 
         let shared = Arc::new(RaopShared {
             rsakey,

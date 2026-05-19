@@ -551,7 +551,8 @@ impl PairVerifyServer {
 
     /// Process verify M3 from client. Returns M4 response and shared secret.
     /// `lookup` resolves a client identifier to its stored Ed25519 public key.
-    /// If `lookup` is `None` or returns `None`, signature verification is skipped (transient).
+    /// If `lookup` is `None`, signature verification is skipped for transient sessions.
+    /// If a lookup callback is provided, unknown clients fail verification.
     pub fn process_m3_build_m4(&mut self, data: &[u8], lookup: PairingKeyLookup<'_>) -> Result<Vec<u8>, CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
         let enc = tlv
@@ -576,10 +577,13 @@ impl PairVerifyServer {
             .get_type(TlvType::Signature)
             .ok_or_else(|| CryptoError::PairingHandshake("Verify M3: missing signature".into()))?;
 
-        if let Some(ltpk) = lookup.and_then(|f| f(std::str::from_utf8(identifier).unwrap_or(""))) {
+        if let Some(lookup) = lookup {
+            let identifier = std::str::from_utf8(identifier)
+                .map_err(|_| CryptoError::PairingHandshake("Verify M3: invalid identifier encoding".into()))?;
+            let ltpk = lookup(identifier).ok_or(CryptoError::PairingVerify)?;
             let mut info = Vec::new();
             info.extend_from_slice(&self.client_eph_pk);
-            info.extend_from_slice(identifier);
+            info.extend_from_slice(identifier.as_bytes());
             info.extend_from_slice(&self.server_eph_pk);
 
             let vk = VerifyingKey::from_bytes(&ltpk)
@@ -728,7 +732,7 @@ mod tests {
     }
 
     fn hex_encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
+        data.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     /// Full non-transient pair-setup self-test: SRP → M5/M6 with encrypted Ed25519.
@@ -888,14 +892,16 @@ mod tests {
         let client_shared = client_secret.diffie_hellman(&server_pub);
 
         // Client builds M3 (encrypted identifier + signature)
-        let (client_sk, _) = server_keypair("ClientDev01"); // reuse helper for test
+        let client_id = "ClientDev01";
+        let (client_sk, client_vk) = server_keypair(client_id); // reuse helper for test
         let mut sign_info = Vec::new();
         sign_info.extend_from_slice(client_eph_pk.as_bytes());
+        sign_info.extend_from_slice(client_id.as_bytes());
         sign_info.extend_from_slice(server_eph_pk_bytes);
         let signature = client_sk.sign(&sign_info);
 
         let mut inner = TlvValues::new();
-        inner.add(TlvType::Identifier as u8, b"ClientDev01");
+        inner.add(TlvType::Identifier as u8, client_id.as_bytes());
         inner.add(TlvType::Signature as u8, &signature.to_bytes());
         let plaintext = inner.encode();
 
@@ -914,12 +920,58 @@ mod tests {
         m3.add(TlvType::State as u8, &[3]);
         m3.add(TlvType::EncryptedData as u8, &encrypted);
 
-        let m4_data = server.process_m3_build_m4(&m3.encode(), None).unwrap();
+        let client_pk = *client_vk.as_bytes();
+        let lookup = |id: &str| (id == client_id).then_some(client_pk);
+        let m4_data = server.process_m3_build_m4(&m3.encode(), Some(&lookup)).unwrap();
         let m4 = TlvValues::decode(&m4_data).unwrap();
         assert_eq!(m4.get_type(TlvType::State), Some(&[4u8][..]));
 
         // Both sides should have the same shared secret
         let server_secret = server.shared_secret().expect("should be completed");
         assert_eq!(server_secret, client_shared.as_bytes());
+    }
+
+    #[test]
+    fn pair_verify_rejects_unknown_persistent_client() {
+        let mut server = PairVerifyServer::new("VerifyDev01");
+
+        let mut client_eph_sk_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_eph_sk_bytes);
+        let client_secret = x25519_dalek::StaticSecret::from(client_eph_sk_bytes);
+        let client_eph_pk = x25519_dalek::PublicKey::from(&client_secret);
+
+        let mut m1 = TlvValues::new();
+        m1.add(TlvType::State as u8, &[1]);
+        m1.add(TlvType::PublicKey as u8, client_eph_pk.as_bytes());
+
+        let m2_data = server.process_m1_build_m2(&m1.encode()).unwrap();
+        let m2 = TlvValues::decode(&m2_data).unwrap();
+        let server_eph_pk_bytes = m2.get_type(TlvType::PublicKey).unwrap();
+        let server_pub = x25519_dalek::PublicKey::from(<[u8; 32]>::try_from(server_eph_pk_bytes).unwrap());
+        let client_shared = client_secret.diffie_hellman(&server_pub);
+
+        let mut inner = TlvValues::new();
+        inner.add(TlvType::Identifier as u8, b"UnknownClient");
+        inner.add(TlvType::Signature as u8, &[0u8; 64]);
+
+        let mut derived_key = [0u8; 32];
+        hkdf_derive(
+            client_shared.as_bytes(),
+            "Pair-Verify-Encrypt-Salt",
+            "Pair-Verify-Encrypt-Info",
+            &mut derived_key,
+        )
+        .unwrap();
+        let encrypted = encrypt_chacha(&derived_key, &make_nonce(b"PV-Msg03"), &inner.encode()).unwrap();
+
+        let mut m3 = TlvValues::new();
+        m3.add(TlvType::State as u8, &[3]);
+        m3.add(TlvType::EncryptedData as u8, &encrypted);
+
+        let lookup = |_id: &str| None;
+        let result = server.process_m3_build_m4(&m3.encode(), Some(&lookup));
+
+        assert!(matches!(result, Err(CryptoError::PairingVerify)));
+        assert!(server.shared_secret().is_none());
     }
 }

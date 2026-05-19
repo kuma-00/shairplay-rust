@@ -38,7 +38,6 @@ impl AudioSession for TestSession {
 }
 
 struct TestState {
-    inits: Arc<Mutex<Vec<AudioFormat>>>,
     volumes: Arc<Mutex<Vec<f32>>>,
     metadata: Arc<Mutex<Vec<TrackMetadata>>>,
     coverart: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -64,7 +63,6 @@ async fn start_server() -> (RaopServer, u16, TestState) {
     server.start().await.unwrap();
     let port = server.service_info().port;
     let state = TestState {
-        inits,
         volumes,
         metadata,
         coverart,
@@ -77,6 +75,46 @@ async fn send_rtsp(stream: &mut TcpStream, request: &str) -> String {
     let mut buf = vec![0u8; 4096];
     let n = stream.read(&mut buf).await.unwrap();
     String::from_utf8_lossy(&buf[..n]).to_string()
+}
+
+fn empty_handler() -> Arc<TestHandler> {
+    Arc::new(TestHandler {
+        inits: Arc::new(Mutex::new(Vec::new())),
+        volumes: Arc::new(Mutex::new(Vec::new())),
+        metadata: Arc::new(Mutex::new(Vec::new())),
+        coverart: Arc::new(Mutex::new(Vec::new())),
+    })
+}
+
+#[test]
+fn default_hwaddr_is_locally_administered_unicast() {
+    let server = RaopServer::builder()
+        .name("RandomHwaddrTest")
+        .port(0)
+        .build(empty_handler())
+        .unwrap();
+    let info = server.service_info();
+    let hwaddr_hex = info.raop_name.split('@').next().unwrap();
+    let first_octet = u8::from_str_radix(&hwaddr_hex[..2], 16).unwrap();
+
+    assert_eq!(hwaddr_hex.len(), 12);
+    assert_eq!(first_octet & 0x02, 0x02);
+    assert_eq!(first_octet & 0x01, 0);
+}
+
+#[test]
+fn builder_rejects_invalid_hwaddr_length() {
+    let result = RaopServer::builder()
+        .name("InvalidHwaddrTest")
+        .hwaddr(vec![0xAA; 5])
+        .build(empty_handler());
+
+    assert!(matches!(
+        result,
+        Err(shairplay::ShairplayError::Server(
+            shairplay::error::ServerError::InvalidHwAddr(5)
+        ))
+    ));
 }
 
 #[tokio::test]
@@ -117,6 +155,38 @@ async fn tcp_connect_and_options() {
 
 #[tokio::test]
 #[serial]
+async fn unknown_rtsp_method_returns_404() {
+    let (mut server, port, _) = start_server().await;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+    let resp = send_rtsp(&mut stream, "BOGUS * RTSP/1.0\r\nCSeq: 7\r\n\r\n").await;
+
+    assert!(resp.contains("RTSP/1.0 404 Not Found"), "got: {resp}");
+    assert!(resp.contains("CSeq: 7"));
+
+    server.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn oversized_header_returns_400_and_closes_connection() {
+    let (mut server, port, _) = start_server().await;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+    let request = format!(
+        "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nX-Oversized: {}\r\n\r\n",
+        "A".repeat(65 * 1024)
+    );
+    let resp = send_rtsp(&mut stream, &request).await;
+
+    assert!(resp.contains("RTSP/1.0 400 Bad Request"), "got: {resp}");
+    assert!(resp.contains("Connection: close"));
+
+    server.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn pair_setup_returns_public_key() {
     let (mut server, port, _) = start_server().await;
 
@@ -124,9 +194,8 @@ async fn pair_setup_returns_public_key() {
 
     // Send 32 bytes of dummy pair-setup data
     let body = [0x42u8; 32];
-    let req = format!(
-        "POST /pair-setup HTTP/1.0\r\nCSeq: 1\r\nContent-Length: 32\r\nContent-Type: application/octet-stream\r\n\r\n"
-    );
+    let req =
+        "POST /pair-setup HTTP/1.0\r\nCSeq: 1\r\nContent-Length: 32\r\nContent-Type: application/octet-stream\r\n\r\n";
     stream.write_all(req.as_bytes()).await.unwrap();
     stream.write_all(&body).await.unwrap();
 
@@ -168,18 +237,12 @@ async fn fp_setup_returns_142_bytes() {
 #[tokio::test]
 #[serial]
 async fn unauthorized_without_password_header() {
-    let handler = Arc::new(TestHandler {
-        inits: Arc::new(Mutex::new(Vec::new())),
-        volumes: Arc::new(Mutex::new(Vec::new())),
-        metadata: Arc::new(Mutex::new(Vec::new())),
-        coverart: Arc::new(Mutex::new(Vec::new())),
-    });
     let mut server = RaopServer::builder()
         .name("AuthTest")
         .hwaddr([0xAA; 6])
         .port(0)
         .password("secret123")
-        .build(handler)
+        .build(empty_handler())
         .unwrap();
     server.start().await.unwrap();
     let port = server.service_info().port;
@@ -240,8 +303,6 @@ async fn teardown_closes_connection() {
 #[cfg(feature = "ap2")]
 mod ap2_tests {
     use super::*;
-    use num_bigint::BigUint;
-    use shairplay::crypto::pairing_homekit;
     use shairplay::crypto::tlv::{TlvType, TlvValues};
 
     #[tokio::test]
@@ -282,7 +343,7 @@ mod ap2_tests {
         let salt = m2.get_type(TlvType::Salt).unwrap();
         let pk_b = m2.get_type(TlvType::PublicKey).unwrap();
         assert_eq!(salt.len(), 16);
-        assert!(pk_b.len() > 0 && pk_b.len() <= 384);
+        assert!(!pk_b.is_empty() && pk_b.len() <= 384);
 
         server.stop().await;
     }
@@ -400,12 +461,12 @@ mod ap2_tests {
         }
         let h_i = sha512(b"Pair-Setup");
         let mut h = Sha512::new();
-        h.update(&h_xor);
-        h.update(&h_i);
-        h.update(&to_bytes_be(&salt_bn));
-        h.update(&to_bytes_be(&big_a));
-        h.update(&to_bytes_be(&big_b));
-        h.update(&session_key);
+        h.update(h_xor);
+        h.update(h_i);
+        h.update(to_bytes_be(&salt_bn));
+        h.update(to_bytes_be(&big_a));
+        h.update(to_bytes_be(&big_b));
+        h.update(session_key);
         let client_m: [u8; 64] = h.finalize().into();
 
         // M3: send A + proof
@@ -425,9 +486,9 @@ mod ap2_tests {
         // Verify server proof
         let server_proof = m4.get_type(TlvType::Proof).unwrap();
         let mut h = Sha512::new();
-        h.update(&to_bytes_be(&big_a));
-        h.update(&client_m);
-        h.update(&session_key);
+        h.update(to_bytes_be(&big_a));
+        h.update(client_m);
+        h.update(session_key);
         let expected_hamk: [u8; 64] = h.finalize().into();
         assert_eq!(server_proof, &expected_hamk[..], "Server proof should match");
 
@@ -451,9 +512,11 @@ async fn set_parameter_volume_calls_handler() {
     let resp = send_rtsp(&mut stream, &req).await;
     assert!(resp.contains("200 OK"));
 
-    let volumes = state.volumes.lock().unwrap();
-    assert_eq!(volumes.len(), 1);
-    assert!((volumes[0] - (-20.0)).abs() < 0.01);
+    {
+        let volumes = state.volumes.lock().unwrap();
+        assert_eq!(volumes.len(), 1);
+        assert!((volumes[0] - (-20.0)).abs() < 0.01);
+    }
 
     server.stop().await;
 }
@@ -481,9 +544,11 @@ async fn set_parameter_metadata_calls_handler() {
     let resp = String::from_utf8_lossy(&buf[..n]);
     assert!(resp.contains("200 OK"));
 
-    let meta = state.metadata.lock().unwrap();
-    assert_eq!(meta.len(), 1);
-    assert_eq!(meta[0].title.as_deref(), Some("Test"));
+    {
+        let meta = state.metadata.lock().unwrap();
+        assert_eq!(meta.len(), 1);
+        assert_eq!(meta[0].title.as_deref(), Some("Test"));
+    }
 
     server.stop().await;
 }
@@ -507,9 +572,11 @@ async fn set_parameter_coverart_calls_handler() {
     let resp = String::from_utf8_lossy(&buf[..n]);
     assert!(resp.contains("200 OK"));
 
-    let art = state.coverart.lock().unwrap();
-    assert_eq!(art.len(), 1);
-    assert_eq!(&art[0], jpeg);
+    {
+        let art = state.coverart.lock().unwrap();
+        assert_eq!(art.len(), 1);
+        assert_eq!(&art[0], jpeg);
+    }
 
     server.stop().await;
 }

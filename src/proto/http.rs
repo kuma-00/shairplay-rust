@@ -5,6 +5,11 @@ use std::fmt::Write;
 
 use crate::error::ProtocolError;
 
+/// Maximum size accepted for RTSP/HTTP headers.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+/// Maximum size accepted for a single request body.
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Incremental RTSP/HTTP request parser. Equivalent to http_request.c.
 /// Uses httparse internally instead of the joyent http_parser.
 pub struct HttpRequest {
@@ -41,6 +46,9 @@ impl HttpRequest {
             return Ok(());
         }
         self.buffer.extend_from_slice(data);
+        if !self.headers_complete && self.buffer.len() > MAX_HEADER_BYTES {
+            return Err(ProtocolError::InvalidRtsp("request headers exceed 64 KiB".into()));
+        }
 
         if !self.headers_complete {
             self.try_parse_headers()?;
@@ -70,12 +78,17 @@ impl HttpRequest {
                 self.url = req.path.map(|p| p.to_string());
 
                 for h in req.headers.iter() {
-                    self.headers
-                        .insert(h.name.to_string(), String::from_utf8_lossy(h.value).to_string());
+                    self.headers.insert(
+                        h.name.to_ascii_lowercase(),
+                        String::from_utf8_lossy(h.value).to_string(),
+                    );
                 }
 
                 // Extract Content-Length
-                self.content_length = self.headers.get("Content-Length").and_then(|v| v.parse::<usize>().ok());
+                self.content_length = self.headers.get("content-length").and_then(|v| v.parse::<usize>().ok());
+                if self.content_length.unwrap_or(0) > MAX_BODY_BYTES {
+                    return Err(ProtocolError::InvalidRtsp("request body exceeds 32 MiB".into()));
+                }
 
                 self.headers_complete = true;
 
@@ -147,9 +160,9 @@ impl HttpRequest {
         self.url.as_deref()
     }
 
-    /// Get a header value by name (case-sensitive, matching C behavior).
+    /// Get a header value by name. Header lookup is ASCII case-insensitive.
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.get(name).map(|s| s.as_str())
+        self.headers.get(&name.to_ascii_lowercase()).map(|s| s.as_str())
     }
 
     /// The request body, if present.

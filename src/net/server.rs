@@ -4,11 +4,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, watch};
 
 use crate::error::NetworkError;
 use crate::proto::http::{HttpRequest, HttpResponse};
+
+async fn write_bad_request_and_close(stream: &mut TcpStream, handler: Option<&mut dyn ConnectionHandler>) {
+    let mut response = HttpResponse::new("RTSP/1.0", 400, "Bad Request");
+    response.add_header("Connection", "close");
+    response.finish(None);
+    let wire_out = match handler {
+        Some(handler) if handler.is_encrypted() => handler.encrypt_outgoing(response.get_data()),
+        _ => response.get_data().to_vec(),
+    };
+    let _ = stream.write_all(&wire_out).await;
+    let _ = stream.shutdown().await;
+}
 
 /// Controls how the server binds to network addresses.
 ///
@@ -276,6 +288,7 @@ fn spawn_accept_loop(
                                 let leftover = request.take_leftover();
                                 request = HttpRequest::new();
                                 if !leftover.is_empty() && request.add_data(&leftover).is_err() {
+                                    write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
                                     return;
                                 }
                             }
@@ -304,6 +317,7 @@ fn spawn_accept_loop(
                                             tracing::trace!("Decrypted: {:?}", String::from_utf8_lossy(&plain[..plain.len().min(120)]));
                                             if request.add_data(&plain).is_err() {
                                                 tracing::warn!("HTTP parse error on decrypted data");
+                                                write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
                                                 break;
                                             }
                                             tracing::trace!(complete = request.is_complete(), headers_complete = request.headers_complete(), "After add_data");
@@ -318,6 +332,7 @@ fn spawn_accept_loop(
                                 tracing::trace!(encrypted = false, n, "Read (plaintext)");
                                 if request.add_data(&buf[..n]).is_err() {
                                     tracing::warn!("HTTP parse error, first bytes: {:02x?}", &buf[..n.min(32)]);
+                                    write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
                                     break;
                                 }
                             }

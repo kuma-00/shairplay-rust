@@ -322,6 +322,12 @@ async fn receive_loop(
         }
     }
     debug!("Buffered audio receive loop ended");
+    let (lock, cvar) = &*state;
+    if let Ok(mut s) = lock.lock() {
+        s.stopped = true;
+        s.buffer.clear();
+        cvar.notify_all();
+    }
 }
 
 /// Timed playout delivery thread. Wakes on condvar, delivers due frames to AudioSession.
