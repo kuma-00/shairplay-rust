@@ -88,12 +88,11 @@ pub(crate) fn ip_from_bytes(bytes: &[u8]) -> std::net::IpAddr {
     }
 }
 
-/// Returns a bind address string matching the connection's local interface.
-/// Returns a bind address string for sub-listeners (buffered audio, event channel, etc.).
+/// Returns a bind address for sub-listeners (buffered audio, event channel, etc.).
 /// Uses the specific local IP for routable addresses (respects BindConfig).
 /// Falls back to unspecified for link-local IPv6.
 #[cfg(feature = "ap2")]
-pub(crate) fn bind_addr_for(conn: &RaopConnection) -> String {
+pub(crate) fn bind_addr_for(conn: &RaopConnection) -> std::net::SocketAddr {
     let ip = local_ip_from(conn);
     let bind_ip = match ip {
         std::net::IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80 => {
@@ -101,7 +100,7 @@ pub(crate) fn bind_addr_for(conn: &RaopConnection) -> String {
         }
         other => other,
     };
-    format!("{bind_ip}:0")
+    std::net::SocketAddr::new(bind_ip, 0)
 }
 /// AP1 pair-setup: return Ed25519 public key.
 pub(crate) fn handle_pair_setup(
@@ -299,13 +298,7 @@ pub(crate) fn handle_setup(
     }
 
     if let Some(rtp) = &mut conn.raop_rtp {
-        // We need to start RTP in a blocking context — store params for later
-        // For now, use tokio::runtime::Handle to block
-
-        let (cport, tport, dport) = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(rtp.start(use_udp, remote_cport, remote_tport))
-        })
-        .ok()?;
+        let (cport, tport, dport) = rtp.start(use_udp, remote_cport, remote_tport).ok()?;
 
         let transport_resp = if use_udp {
             format!(

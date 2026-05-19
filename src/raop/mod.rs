@@ -67,24 +67,16 @@ impl DacpRemoteControl {
 
 impl RemoteControl for DacpRemoteControl {
     fn send_command(&self, cmd: RemoteCommand) -> Result<(), crate::error::ShairplayError> {
-        let rt = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async {
-                match cmd {
-                    RemoteCommand::Play => self.client.play_pause().await,
-                    RemoteCommand::Pause => self.client.play_pause().await,
-                    RemoteCommand::NextTrack => self.client.next().await,
-                    RemoteCommand::PreviousTrack => self.client.prev().await,
-                    RemoteCommand::SetVolume(v) => self.client.set_volume(v).await,
-                    RemoteCommand::ToggleShuffle => self.client.set_shuffle(true).await,
-                    RemoteCommand::ToggleRepeat => self.client.set_repeat(1).await,
-                    RemoteCommand::Stop => self.client.stop().await,
-                }
-            })
-        })
-        .map_err(|e| {
-            crate::error::ShairplayError::Network(crate::error::NetworkError::Io(std::io::Error::other(e.to_string())))
-        })
+        let result = match cmd {
+            RemoteCommand::Play | RemoteCommand::Pause => self.client.play_pause_blocking(),
+            RemoteCommand::NextTrack => self.client.next_blocking(),
+            RemoteCommand::PreviousTrack => self.client.prev_blocking(),
+            RemoteCommand::SetVolume(v) => self.client.set_volume_blocking(v),
+            RemoteCommand::ToggleShuffle => self.client.set_shuffle_blocking(true),
+            RemoteCommand::ToggleRepeat => self.client.set_repeat_blocking(1),
+            RemoteCommand::Stop => self.client.stop_blocking(),
+        };
+        result.map_err(crate::error::ShairplayError::Network)
     }
 
     fn available_commands(&self) -> Vec<RemoteCommand> {

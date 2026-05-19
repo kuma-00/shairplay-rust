@@ -7,11 +7,30 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::error::NetworkError;
 use tracing::debug;
+
+const PLAY_PAUSE_PATH: &str = "/ctrl-int/1/playpause";
+const NEXT_PATH: &str = "/ctrl-int/1/nextitem";
+const PREVIOUS_PATH: &str = "/ctrl-int/1/previtem";
+const STOP_PATH: &str = "/ctrl-int/1/stop";
+
+fn volume_path(volume: u8) -> String {
+    format!("/ctrl-int/1/setproperty?dmcp.volume={}", volume.min(100))
+}
+
+fn shuffle_path(on: bool) -> String {
+    let state = if on { 1 } else { 0 };
+    format!("/ctrl-int/1/setproperty?dacp.shufflestate={state}")
+}
+
+fn repeat_path(state: u8) -> String {
+    format!("/ctrl-int/1/setproperty?dacp.repeatstate={state}")
+}
 
 /// Browse `_dacp._tcp` via mDNS and return the port for the given DACP-ID.
 /// Returns None if not found within 2 seconds.
@@ -50,8 +69,7 @@ fn discover_dacp_port(dacp_id: &str, _remote_ip: std::net::IpAddr) -> Option<u16
 
 /// Client for sending DACP remote control commands to an Apple device.
 ///
-/// Created from the DACP ID and Active-Remote header received via
-/// [`AudioSession::audio_remote_control_id`](crate::AudioSession::audio_remote_control_id).
+/// Created from the DACP ID and Active-Remote header received by the AirPlay session.
 ///
 /// # Example
 /// ```rust,no_run
@@ -107,44 +125,39 @@ impl DacpClient {
     /// Toggle play/pause.
     pub async fn play_pause(&self) -> Result<(), NetworkError> {
         debug!("DACP: play_pause");
-        self.command("/ctrl-int/1/playpause").await
+        self.command(PLAY_PAUSE_PATH).await
     }
 
     /// Next track.
     pub async fn next(&self) -> Result<(), NetworkError> {
         debug!("DACP: next");
-        self.command("/ctrl-int/1/nextitem").await
+        self.command(NEXT_PATH).await
     }
 
     /// Previous track.
     pub async fn prev(&self) -> Result<(), NetworkError> {
         debug!("DACP: prev");
-        self.command("/ctrl-int/1/previtem").await
+        self.command(PREVIOUS_PATH).await
     }
 
     /// Stop playback.
     pub async fn stop(&self) -> Result<(), NetworkError> {
-        self.command("/ctrl-int/1/stop").await
+        self.command(STOP_PATH).await
     }
 
     /// Set volume (0–100).
     pub async fn set_volume(&self, volume: u8) -> Result<(), NetworkError> {
-        let vol = volume.min(100);
-        self.command(&format!("/ctrl-int/1/setproperty?dmcp.volume={vol}"))
-            .await
+        self.command(&volume_path(volume)).await
     }
 
     /// Set shuffle state (true = on).
     pub async fn set_shuffle(&self, on: bool) -> Result<(), NetworkError> {
-        let v = if on { 1 } else { 0 };
-        self.command(&format!("/ctrl-int/1/setproperty?dacp.shufflestate={v}"))
-            .await
+        self.command(&shuffle_path(on)).await
     }
 
     /// Set repeat state (0 = off, 1 = single, 2 = all).
     pub async fn set_repeat(&self, state: u8) -> Result<(), NetworkError> {
-        self.command(&format!("/ctrl-int/1/setproperty?dacp.repeatstate={state}"))
-            .await
+        self.command(&repeat_path(state)).await
     }
 
     /// Send a raw DACP command (GET request with Active-Remote header).
@@ -164,5 +177,53 @@ impl DacpClient {
         let mut buf = [0u8; 1024];
         let _ = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await;
         Ok(())
+    }
+
+    /// Send a raw DACP command from synchronous callbacks.
+    pub(crate) fn command_blocking(&self, path: &str) -> Result<(), NetworkError> {
+        let addr = self
+            .addr
+            .ok_or_else(|| NetworkError::Mdns("DACP not discovered yet — call discover() first".into()))?;
+
+        let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nActive-Remote: {}\r\nHost: {addr}\r\n\r\n",
+            self.active_remote
+        );
+        stream.write_all(request.as_bytes())?;
+
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        Ok(())
+    }
+
+    pub(crate) fn play_pause_blocking(&self) -> Result<(), NetworkError> {
+        self.command_blocking(PLAY_PAUSE_PATH)
+    }
+
+    pub(crate) fn next_blocking(&self) -> Result<(), NetworkError> {
+        self.command_blocking(NEXT_PATH)
+    }
+
+    pub(crate) fn prev_blocking(&self) -> Result<(), NetworkError> {
+        self.command_blocking(PREVIOUS_PATH)
+    }
+
+    pub(crate) fn stop_blocking(&self) -> Result<(), NetworkError> {
+        self.command_blocking(STOP_PATH)
+    }
+
+    pub(crate) fn set_volume_blocking(&self, volume: u8) -> Result<(), NetworkError> {
+        self.command_blocking(&volume_path(volume))
+    }
+
+    pub(crate) fn set_shuffle_blocking(&self, on: bool) -> Result<(), NetworkError> {
+        self.command_blocking(&shuffle_path(on))
+    }
+
+    pub(crate) fn set_repeat_blocking(&self, state: u8) -> Result<(), NetworkError> {
+        self.command_blocking(&repeat_path(state))
     }
 }

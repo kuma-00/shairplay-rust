@@ -2,9 +2,26 @@
 
 use crate::crypto::pairing_homekit::{PairVerifyServer, SrpServer};
 use crate::proto::http::{HttpRequest, HttpResponse};
+#[cfg(feature = "video")]
 use crate::raop::rtp::RaopRtp;
 
-use super::handlers_ap1::{RaopConnection, bind_addr_for, local_ip_from};
+#[cfg(feature = "video")]
+use super::handlers_ap1::local_ip_from;
+use super::handlers_ap1::{RaopConnection, bind_addr_for};
+
+#[cfg(feature = "ap2")]
+fn bind_tcp(addr: std::net::SocketAddr) -> Option<tokio::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(addr).ok()?;
+    listener.set_nonblocking(true).ok()?;
+    tokio::net::TcpListener::from_std(listener).ok()
+}
+
+#[cfg(feature = "ap2")]
+fn bind_udp(addr: std::net::SocketAddr) -> Option<tokio::net::UdpSocket> {
+    let socket = std::net::UdpSocket::bind(addr).ok()?;
+    socket.set_nonblocking(true).ok()?;
+    tokio::net::UdpSocket::from_std(socket).ok()
+}
 
 #[cfg(feature = "ap2")]
 /// AP2 pair-setup: SRP-6a + HomeKit pairing (M1→M5).
@@ -222,6 +239,7 @@ pub(crate) fn handle_setup(
         match stream_type {
             96 => {
                 let sr = stream0.get("sr").and_then(|v| v.as_unsigned_integer()).unwrap_or(44100);
+                #[cfg(feature = "video")]
                 let spf = stream0.get("spf").and_then(|v| v.as_unsigned_integer()).unwrap_or(352);
                 let shk = stream0.get("shk").and_then(|v| v.as_data()).unwrap_or(&[]);
 
@@ -231,11 +249,7 @@ pub(crate) fn handle_setup(
                     let mut shk_arr = [0u8; 32];
                     shk_arr.copy_from_slice(shk);
 
-                    let bind_addr = bind_addr_for(conn);
-                    let socket = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(tokio::net::UdpSocket::bind(&bind_addr))
-                    })
-                    .ok()?;
+                    let socket = bind_udp(bind_addr_for(conn))?;
                     let audio_port = socket.local_addr().ok()?.port();
 
                     let handler = conn.handler.clone();
@@ -244,14 +258,12 @@ pub(crate) fn handle_setup(
                         max_channels: conn.output_max_channels,
                     };
 
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().spawn(crate::raop::realtime_audio::run(
-                            socket,
-                            shk_arr,
-                            handler,
-                            output_config,
-                        ));
-                    });
+                    tokio::spawn(crate::raop::realtime_audio::run(
+                        socket,
+                        shk_arr,
+                        handler,
+                        output_config,
+                    ));
 
                     stream_resp.insert("dataPort".into(), plist::Value::Integer(audio_port.into()));
                 } else {
@@ -281,10 +293,7 @@ pub(crate) fn handle_setup(
                                 .get("controlPort")
                                 .and_then(|v| v.as_unsigned_integer())
                                 .unwrap_or(0) as u16;
-                            let (cport, _tport, dport) = tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current().block_on(rtp.start(true, control_port, 0))
-                            })
-                            .ok()?;
+                            let (cport, _tport, dport) = rtp.start(true, control_port, 0).ok()?;
                             stream_resp.insert("dataPort".into(), plist::Value::Integer(dport.into()));
                             stream_resp.insert("controlPort".into(), plist::Value::Integer(cport.into()));
                         }
@@ -313,11 +322,7 @@ pub(crate) fn handle_setup(
                 let mut shk_arr = [0u8; 32];
                 shk_arr.copy_from_slice(shk);
 
-                let bind_addr = bind_addr_for(conn);
-                let listener = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(tokio::net::TcpListener::bind(bind_addr))
-                })
-                .ok()?;
+                let listener = bind_tcp(bind_addr_for(conn))?;
                 let audio_port = listener.local_addr().ok()?.port();
                 tracing::info!(audio_port, "Buffered audio TCP port opened");
 
@@ -327,15 +332,11 @@ pub(crate) fn handle_setup(
                     max_channels: conn.output_max_channels,
                 };
 
-                let cmd_tx = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        let proc = crate::raop::buffered_audio::BufferedAudioProcessor {
-                            listener,
-                            port: audio_port,
-                        };
-                        proc.start(shk_arr, output_config, handler)
-                    })
-                });
+                let proc = crate::raop::buffered_audio::BufferedAudioProcessor {
+                    listener,
+                    port: audio_port,
+                };
+                let cmd_tx = proc.start(shk_arr, output_config, handler);
                 conn.playout_cmd = Some(cmd_tx);
 
                 stream_resp.insert("dataPort".into(), plist::Value::Integer(audio_port.into()));
@@ -349,21 +350,15 @@ pub(crate) fn handle_setup(
                 // On PTP connections, type 130 is just acknowledged
                 // On RC connections, it sets up an encrypted data channel
                 if let Some(_seed) = stream0.get("seed").and_then(|v| v.as_unsigned_integer()) {
-                    let bind_addr = bind_addr_for(conn);
-                    let data_listener = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(tokio::net::TcpListener::bind(bind_addr))
-                    })
-                    .ok()?;
+                    let data_listener = bind_tcp(bind_addr_for(conn))?;
                     let data_port = data_listener.local_addr().ok()?.port();
                     tracing::debug!(data_port, "RC data channel opened");
 
                     // Spawn listener (just accept + log for now)
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().spawn(async move {
-                            if let Ok((_, addr)) = data_listener.accept().await {
-                                tracing::info!(%addr, "RC data channel client connected");
-                            }
-                        })
+                    tokio::spawn(async move {
+                        if let Ok((_, addr)) = data_listener.accept().await {
+                            tracing::info!(%addr, "RC data channel client connected");
+                        }
                     });
 
                     stream_resp.insert("streamID".into(), plist::Value::Integer(1_i64.into()));
@@ -460,20 +455,13 @@ pub(crate) fn handle_setup(
 
                 let cipher = crate::crypto::video_cipher::VideoCipher::new(&ekey, &eiv);
 
-                let bind_addr = bind_addr_for(conn);
-                let listener = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(tokio::net::TcpListener::bind(bind_addr))
-                })
-                .ok()?;
+                let listener = bind_tcp(bind_addr_for(conn))?;
                 let video_port = listener.local_addr().ok()?.port();
                 tracing::info!(video_port, "Video stream TCP port opened");
 
                 if let Some(vh) = &conn.video_handler {
                     let session = vh.video_init();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .spawn(crate::raop::video_stream::run(listener, cipher, session));
-                    });
+                    tokio::spawn(crate::raop::video_stream::run(listener, cipher, session));
                 }
 
                 stream_resp.insert("dataPort".into(), plist::Value::Integer(video_port.into()));
@@ -583,16 +571,8 @@ pub(crate) fn handle_setup(
         }
 
         // Bind event port on same address family as the client connection
-        let bind_addr = bind_addr_for(conn);
-        let event_ch = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-                let port = listener.local_addr()?.port();
-                Ok::<_, std::io::Error>((listener, port))
-            })
-        })
-        .ok()?;
-        let (event_listener, event_port) = event_ch;
+        let event_listener = bind_tcp(bind_addr_for(conn))?;
+        let event_port = event_listener.local_addr().ok()?.port();
         tracing::info!(event_port, "Event channel opened");
 
         // Derive event channel encryption keys from shared secret (AP2 only).
@@ -600,7 +580,7 @@ pub(crate) fn handle_setup(
         if let Some(shared_secret) = conn.ap2_shared_secret.as_ref() {
             if let Ok(event_channel_cipher) = crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret) {
                 // Spawn bidirectional event channel
-                let event_sender = tokio::task::block_in_place(|| {
+                let event_sender = {
                     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
                     // Queue updateInfo so it's sent immediately when client connects
@@ -641,7 +621,7 @@ pub(crate) fn handle_setup(
                     }
 
                     let sender = crate::raop::event_channel::EventSender::from_tx(tx);
-                    tokio::runtime::Handle::current().spawn(async move {
+                    tokio::spawn(async move {
                         if let Ok((stream, addr)) = event_listener.accept().await {
                             tracing::info!(%addr, "Event channel client connected");
                             crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx)
@@ -649,7 +629,7 @@ pub(crate) fn handle_setup(
                         }
                     });
                     sender
-                });
+                };
                 conn.event_sender = Some(event_sender);
             }
         }
@@ -671,18 +651,15 @@ pub(crate) fn handle_setup(
                 .get("timingPort")
                 .and_then(|v| v.as_unsigned_integer())
                 .unwrap_or(0) as u16;
-            let bind_addr = bind_addr_for(conn);
-            let tport = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    let tsock = tokio::net::UdpSocket::bind(&bind_addr).await?;
-                    let local_port = tsock.local_addr()?.port();
+            let tport = bind_udp(bind_addr_for(conn))
+                .and_then(|tsock| {
+                    let local_port = tsock.local_addr().ok()?.port();
                     let mut remote_timing = conn.remote_socket;
                     remote_timing.set_port(timing_rport);
                     crate::raop::ntp::spawn_ntp_responder(tsock, remote_timing);
-                    Ok::<_, std::io::Error>(local_port)
+                    Some(local_port)
                 })
-            })
-            .unwrap_or(0);
+                .unwrap_or(0);
             tracing::debug!(tport, timing_rport, "Legacy video: NTP timing socket bound");
             tport
         } else {

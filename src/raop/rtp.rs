@@ -15,10 +15,11 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{Mutex, watch};
 use tracing::info;
 
+use crate::codec::alac::AlacConfig;
 use crate::error::{NetworkError, ShairplayError};
 use crate::raop::buffer::{RAOP_PACKET_LEN, RaopBuffer};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
@@ -35,6 +36,22 @@ fn rtp_bind_addr(local: IpAddr) -> IpAddr {
         IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80 => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
         other => other,
     }
+}
+
+fn bind_udp(addr: SocketAddr) -> Result<UdpSocket, ShairplayError> {
+    let socket = std::net::UdpSocket::bind(addr).map_err(NetworkError::Io)?;
+    socket.set_nonblocking(true).map_err(NetworkError::Io)?;
+    UdpSocket::from_std(socket)
+        .map_err(NetworkError::Io)
+        .map_err(Into::into)
+}
+
+fn bind_tcp(addr: SocketAddr) -> Result<TcpListener, ShairplayError> {
+    let listener = std::net::TcpListener::bind(addr).map_err(NetworkError::Io)?;
+    listener.set_nonblocking(true).map_err(NetworkError::Io)?;
+    TcpListener::from_std(listener)
+        .map_err(NetworkError::Io)
+        .map_err(Into::into)
 }
 
 /// Parse the SDP `c=` remote address to raw IP bytes for DACP callbacks.
@@ -88,10 +105,8 @@ pub struct RtpConfig {
 /// AP1 RTP streaming session.
 ///
 /// Owns the UDP/TCP sockets, the packet buffer, and the ALAC decoder.
-/// Created by [`handle_announce`](super::handlers::handle_announce) when
-/// the iPhone sends the SDP ANNOUNCE. Started by
-/// [`handle_setup`](super::handlers::handle_setup) which binds ports and
-/// spawns the receive task.
+/// Created when the iPhone sends the SDP ANNOUNCE. Started during RTSP SETUP,
+/// which binds ports and spawns the receive task.
 ///
 /// Dropped when the RTSP connection closes, which sends a shutdown signal
 /// to the receive task via the [`watch`] channel.
@@ -103,6 +118,8 @@ pub struct RaopRtp {
     local_addr: IpAddr,
     /// If set, resample decoded audio to this rate before delivery.
     output_sample_rate: Option<u32>,
+    /// Parsed ALAC stream configuration.
+    config: AlacConfig,
     /// Shared packet buffer (decrypt + decode on queue, dequeue in order).
     buffer: Arc<Mutex<RaopBuffer>>,
     /// Shared mutable state for cross-task event delivery.
@@ -126,12 +143,14 @@ impl RaopRtp {
     /// Does not bind sockets or start receiving — call [`start`](Self::start) for that.
     pub fn new(callbacks: Arc<dyn AudioHandler>, config: RtpConfig) -> Self {
         let buffer = RaopBuffer::new(&config.rtpmap, &config.fmtp, &config.aes_key, &config.aes_iv);
+        let alac_config = buffer.config().clone();
         Self {
             handler: callbacks,
             remote: config.remote,
             local_addr: config.local_addr,
             output_sample_rate: config.output_sample_rate,
             remote_socket: config.remote_socket,
+            config: alac_config,
             buffer: Arc::new(Mutex::new(buffer)),
             state: Arc::new(Mutex::new(RtpState { flush: NO_FLUSH })),
             shutdown_tx: None,
@@ -153,7 +172,7 @@ impl RaopRtp {
     ///   Control channel receives retransmit responses (RTP payload type 0x56).
     /// - `use_udp = false`: binds 1 TCP listener. iPhone connects and sends
     ///   `$`-prefixed interleaved RTP frames.
-    pub async fn start(
+    pub fn start(
         &mut self,
         use_udp: bool,
         control_rport: u16,
@@ -166,9 +185,9 @@ impl RaopRtp {
 
         if use_udp {
             let bind_addr = SocketAddr::new(rtp_bind_addr(self.local_addr), 0);
-            let csock = UdpSocket::bind(bind_addr).await.map_err(NetworkError::Io)?;
-            let tsock = UdpSocket::bind(bind_addr).await.map_err(NetworkError::Io)?;
-            let dsock = UdpSocket::bind(bind_addr).await.map_err(NetworkError::Io)?;
+            let csock = bind_udp(bind_addr)?;
+            let tsock = bind_udp(bind_addr)?;
+            let dsock = bind_udp(bind_addr)?;
             self.control_lport = csock.local_addr().map_err(NetworkError::Io)?.port();
             self.timing_lport = tsock.local_addr().map_err(NetworkError::Io)?.port();
             self.data_lport = dsock.local_addr().map_err(NetworkError::Io)?.port();
@@ -179,10 +198,7 @@ impl RaopRtp {
             timing_addr.set_port(timing_rport);
             super::ntp::spawn_ntp_responder(tsock, timing_addr);
 
-            let config = {
-                let buf = self.buffer.lock().await;
-                buf.config().clone()
-            };
+            let config = self.config.clone();
             let mut session = self.handler.audio_init(AudioFormat {
                 codec: AudioCodec::Pcm,
                 bits: 32,
@@ -266,15 +282,10 @@ impl RaopRtp {
             });
         } else {
             // TCP interleaved mode: single connection, `$`-prefixed framing.
-            let listener = tokio::net::TcpListener::bind(SocketAddr::new(rtp_bind_addr(self.local_addr), 0))
-                .await
-                .map_err(NetworkError::Io)?;
+            let listener = bind_tcp(SocketAddr::new(rtp_bind_addr(self.local_addr), 0))?;
             self.data_lport = listener.local_addr().map_err(NetworkError::Io)?.port();
 
-            let config = {
-                let buf = self.buffer.lock().await;
-                buf.config().clone()
-            };
+            let config = self.config.clone();
             let mut session = self.handler.audio_init(AudioFormat {
                 codec: AudioCodec::Pcm,
                 bits: 32,
@@ -377,10 +388,10 @@ impl RaopRtp {
     }
 
     /// Stop the receive task and flush the buffer.
-    pub async fn stop(&mut self) {
+    pub fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(true);
         }
-        self.buffer.lock().await.flush(-1);
+        self.flush(-1);
     }
 }

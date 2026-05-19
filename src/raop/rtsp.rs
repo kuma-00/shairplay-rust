@@ -15,6 +15,14 @@ use crate::raop::handlers_hls;
 /// Handler function signature — all RTSP handlers share this type.
 type Handler = fn(&mut RaopConnection, &HttpRequest, &mut HttpResponse) -> Option<Vec<u8>>;
 
+/// Result of route resolution.
+enum RouteResolution {
+    /// Request is handled inline and has no body.
+    NoBody,
+    /// Request should be passed to a handler function.
+    Handler(Handler),
+}
+
 /// A single route entry: HTTP method, URL path, handler function.
 struct Route {
     method: &'static str,
@@ -197,8 +205,17 @@ pub(crate) fn dispatch(conn: &mut RaopConnection, request: &HttpRequest) -> Http
     }
 
     // --- Route resolution ---
-    let handler = resolve_handler(conn, request, method, url);
-    let response_data = handler.and_then(|h| h(conn, request, &mut response));
+    let response_data = match resolve_handler(conn, request, method, url) {
+        Some(RouteResolution::Handler(handler)) => handler(conn, request, &mut response),
+        Some(RouteResolution::NoBody) => None,
+        None => {
+            tracing::debug!(method, url, "Unhandled RTSP request");
+            response = HttpResponse::new("RTSP/1.0", 404, "Not Found");
+            response.add_header("CSeq", cseq);
+            response.finish(None);
+            return response;
+        }
+    };
     response.finish(response_data.as_deref());
     response
 }
@@ -206,30 +223,32 @@ pub(crate) fn dispatch(conn: &mut RaopConnection, request: &HttpRequest) -> Http
 /// Resolve the handler for a request. Checks the route table first,
 /// then falls back to special-case handlers for methods that need
 /// custom routing logic (SETUP, RECORD, FLUSH, TEARDOWN).
-fn resolve_handler(conn: &mut RaopConnection, request: &HttpRequest, method: &str, url: &str) -> Option<Handler> {
+fn resolve_handler(
+    conn: &mut RaopConnection,
+    request: &HttpRequest,
+    method: &str,
+    url: &str,
+) -> Option<RouteResolution> {
     // 1. Check static route table (exact path or prefix match for query-string routes)
     for route in ROUTES {
         if route.method == method {
             let path = url.split('?').next().unwrap_or(url);
             if route.path == "*" || route.path == path {
-                return Some(route.handler);
+                return Some(RouteResolution::Handler(route.handler));
             }
         }
     }
 
     // 2. Special-case methods with custom routing logic
     match method {
-        "SETUP" => resolve_setup(conn, request),
-        "RECORD" => resolve_record(conn),
+        "SETUP" => resolve_setup(conn, request).map(RouteResolution::Handler),
+        "RECORD" => resolve_record(conn).map(RouteResolution::Handler),
         "FLUSH" => {
             handle_flush_inline(conn, request);
-            None
+            Some(RouteResolution::NoBody)
         }
-        "TEARDOWN" => Some(handle_teardown as Handler),
-        _ => {
-            tracing::debug!(method, url, "Unhandled RTSP method");
-            None
-        }
+        "TEARDOWN" => Some(RouteResolution::Handler(handle_teardown as Handler)),
+        _ => None,
     }
 }
 
@@ -274,9 +293,7 @@ fn handle_teardown(conn: &mut RaopConnection, _request: &HttpRequest, response: 
     response.add_header("Connection", "close");
     response.set_disconnect(true);
     if let Some(mut rtp) = conn.raop_rtp.take() {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(rtp.stop());
-        });
+        rtp.stop();
     }
     #[cfg(feature = "ap2")]
     if let Some(cmd) = &conn.playout_cmd {
