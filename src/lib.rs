@@ -58,12 +58,17 @@ server.start().await?;
 - `video` — Experimental screen mirroring (implies `ap2`)
 "]
 
+#[doc(hidden)]
 pub mod codec;
+#[doc(hidden)]
 pub mod crypto;
 pub mod dacp;
 pub mod error;
+#[doc(hidden)]
 pub mod net;
+#[doc(hidden)]
 pub mod proto;
+#[doc(hidden)]
 pub mod raop;
 pub(crate) mod util;
 
@@ -72,11 +77,11 @@ pub use net::mdns::AirPlayServiceInfo;
 pub use net::server::BindConfig;
 #[cfg(feature = "hls")]
 pub use raop::hls::{HlsHandler, HlsSession};
+#[cfg(feature = "video")]
+pub use raop::video::{PacketKind, VideoHandler, VideoPacket, VideoSession};
 pub use raop::{
     AudioCodec, AudioFormat, AudioHandler, AudioSession, RaopServer, RaopServerBuilder, RemoteCommand, RemoteControl,
     TrackMetadata,
 };
 #[cfg(feature = "ap2")]
 pub use raop::{MemoryPairingStore, PairingStore};
-
-// AirPlay 2 re-exports are internal — crypto modules not part of public API
