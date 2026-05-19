@@ -79,12 +79,10 @@ Tables regenerated from original C source (`playfair/omg_hax.c`).
 The previous conclusion that "iOS 18 doesn't send ekey" was wrong — it does
 send ekey, but only with UxPlay's feature set (no AP2 bits).
 
-### Remaining Issue: Rust `modified_md5`
+### Current FairPlay Status
 
-The Rust port of `modified_md5` (used inside `playfair_decrypt`) still produces
-different output than the C version for certain inputs. Currently using C FFI
-(`libplayfair.a`) as a temporary workaround. The algorithm port needs a
-line-by-line fix to eliminate the C dependency and restore `#![forbid(unsafe_code)]`.
+FairPlay decryption is implemented in safe Rust. The generated lookup tables are
+checked in as Rust constants and are covered by test vectors.
 
 ### Previous Research — Needs Re-verification
 
@@ -102,7 +100,6 @@ The following conclusions from VIDEO-RESEARCH.md were made with the broken
 
 ### Current Limitations
 
-- **C FFI dependency** — `playfair_decrypt` uses linked C library temporarily
 - **No AP2 audio with video** — UxPlay features disable AP2 buffered audio
 - **openh264 decode errors** — Software decoder struggles at 30fps in debug mode
 - **No screen mirroring audio** — Type 96 `usingScreen` audio not yet wired up
@@ -114,8 +111,6 @@ contains only `{"type": Integer(120)}` with no additional fields. Likely HLS
 video relay where the app sends a video URL for the receiver to fetch directly.
 
 ### TODO
-- [ ] Fix Rust `modified_md5` to match C output (eliminate C FFI)
-- [ ] Restore `#![forbid(unsafe_code)]`
 - [ ] Test AP2+video hybrid features (can we have both AP2 audio and video?)
 - [ ] Wire up screen mirroring audio (type 96 `usingScreen`)
 - [ ] Improve H.264 decode stability (release build, error recovery)

@@ -89,7 +89,7 @@ let mut server = RaopServer::builder()
 | Method | Default | Feature | Description |
 |--------|---------|---------|-------------|
 | `.name()` | `"Shairplay"` | | AirPlay display name |
-| `.hwaddr()` | random | | 6-byte MAC address for mDNS |
+| `.hwaddr()` | random locally administered address | | 6-byte MAC address for mDNS |
 | `.port()` | `5000` | | RTSP listening port |
 | `.password()` | none | | HTTP Digest auth password |
 | `.max_clients()` | `10` | | Maximum concurrent connections |
@@ -108,7 +108,7 @@ let mut server = RaopServer::builder()
 | *(default)* | — | AirPlay 1 only |
 | `resample` | rubato | Sample rate conversion + channel mixdown |
 | `ap2` | chacha20poly1305, hkdf, symphonia, … (implies `resample`) | Full AirPlay 2 audio |
-| `video` | (implies `ap2`) | Legacy audio for screen mirroring (video decryption unsolved on iOS 18) |
+| `video` | (implies `ap2`) | Legacy feature set for screen mirroring (`0x527FFEE6`) |
 | `hls` | (implies `video`) | HLS video playback (YouTube, etc.) — receiver relays URL to app |
 
 ## Implementation Status
@@ -128,16 +128,17 @@ Full pipeline: SRP-6a pairing → encrypted RTSP → FairPlay → PTP timing →
 
 ### 🧪 Video (Screen Mirroring) — Work in Progress
 
-Behind the `video` feature gate. **Audio works, video decryption does not.**
+Behind the `video` feature gate. Screen mirroring uses the legacy/UxPlay-compatible
+feature set; AP2 buffered audio is intentionally disabled while video is enabled.
 
 The video feature switches to a UxPlay-compatible legacy feature set
-(`0x5A7FFEE6`) to receive screen mirroring data from iOS 18+. AP2
+(`0x527FFEE6`) to receive screen mirroring data from iOS 18+. AP2
 buffered audio is not available — the iPhone falls back to legacy ALAC
 (type 96) which is fully supported with FairPlay key decryption and
 NTP timing.
 
-Video decryption research is ongoing. The 3-stage FairPlay key derivation
-pipeline is implemented but not yet producing correct output. See
+Video decryption is implemented for the legacy feature-set path; AP2+video
+hybrid operation remains research work. See
 [AP2-STATUS.md](AP2-STATUS.md) and [VIDEO-RESEARCH.md](VIDEO-RESEARCH.md)
 for details.
 
