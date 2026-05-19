@@ -241,6 +241,6 @@ mod tests {
     }
 
     fn hex_encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
+        data.iter().map(|b| format!("{b:02x}")).collect()
     }
 }

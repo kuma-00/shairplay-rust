@@ -112,44 +112,6 @@ pub fn wrap_adts(raw_aac: &[u8], rate: u32, channels: u8) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hex_encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
-    }
-
-    // C-verified test vectors from addADTStoPacket()
-
-    #[test]
-    fn c_vector_adts_44100_stereo_107() {
-        let h = adts_header(107, 44100, 2);
-        assert_eq!(hex_encode(&h), "fff950800d7ffc");
-    }
-
-    #[test]
-    fn c_vector_adts_48000_stereo_507() {
-        let h = adts_header(507, 48000, 2);
-        assert_eq!(hex_encode(&h), "fff94c803f7ffc");
-    }
-
-    #[test]
-    fn c_vector_adts_44100_stereo_1031() {
-        let h = adts_header(1031, 44100, 2);
-        assert_eq!(hex_encode(&h), "fff9508080fffc");
-    }
-
-    #[test]
-    fn wrap_adts_prepends_header() {
-        let raw = vec![0xDE, 0xAD];
-        let wrapped = wrap_adts(&raw, 44100, 2);
-        assert_eq!(wrapped.len(), 9); // 7 header + 2 payload
-        assert_eq!(&wrapped[0..2], &[0xFF, 0xF9]); // sync word
-        assert_eq!(&wrapped[7..], &[0xDE, 0xAD]); // payload preserved
-    }
-}
-
 /// Persistent AAC decoder using symphonia. Decodes ADTS-wrapped AAC to F32LE PCM.
 pub struct AacDecoder {
     decoder: Box<dyn symphonia::core::codecs::Decoder>,
@@ -228,5 +190,43 @@ impl AacDecoder {
     /// Number of audio channels for this format.
     pub fn channels(&self) -> u8 {
         self.channels
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex_encode(data: &[u8]) -> String {
+        data.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    // C-verified test vectors from addADTStoPacket()
+
+    #[test]
+    fn c_vector_adts_44100_stereo_107() {
+        let h = adts_header(107, 44100, 2);
+        assert_eq!(hex_encode(&h), "fff950800d7ffc");
+    }
+
+    #[test]
+    fn c_vector_adts_48000_stereo_507() {
+        let h = adts_header(507, 48000, 2);
+        assert_eq!(hex_encode(&h), "fff94c803f7ffc");
+    }
+
+    #[test]
+    fn c_vector_adts_44100_stereo_1031() {
+        let h = adts_header(1031, 44100, 2);
+        assert_eq!(hex_encode(&h), "fff9508080fffc");
+    }
+
+    #[test]
+    fn wrap_adts_prepends_header() {
+        let raw = vec![0xDE, 0xAD];
+        let wrapped = wrap_adts(&raw, 44100, 2);
+        assert_eq!(wrapped.len(), 9); // 7 header + 2 payload
+        assert_eq!(&wrapped[0..2], &[0xFF, 0xF9]); // sync word
+        assert_eq!(&wrapped[7..], &[0xDE, 0xAD]); // payload preserved
     }
 }

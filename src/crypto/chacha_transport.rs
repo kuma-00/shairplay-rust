@@ -240,7 +240,7 @@ mod tests {
     // --- C-verified test vectors (generated from OpenSSL EVP_chacha20_poly1305) ---
 
     fn hex_encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
+        data.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]

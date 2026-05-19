@@ -143,7 +143,7 @@ mod tests {
             let output = rs.process(&input);
             total_out += output.len();
         }
-        eprintln!("Total output samples from 10x352 frames: {}", total_out);
+        eprintln!("Total output samples from 10x352 frames: {total_out}");
         assert!(total_out > 0, "no output produced");
     }
 

@@ -50,7 +50,7 @@ fn seqnum_cmp(s1: u16, s2: u16) -> i16 {
 }
 
 /// Parse the SDP `fmtp` attribute into an ALAC configuration.
-/// Format: "96 <frame_length> <compat_version> <bit_depth> <pb> <mb> <kb> <channels> <max_run> <max_frame_bytes> <avg_bitrate> <sample_rate>"
+/// Format: `96 <frame_length> <compat_version> <bit_depth> <pb> <mb> <kb> <channels> <max_run> <max_frame_bytes> <avg_bitrate> <sample_rate>`.
 fn parse_fmtp(fmtp: &str) -> Option<AlacConfig> {
     let vals: Vec<&str> = fmtp.split(' ').collect();
     if vals.len() < 12 {
@@ -93,7 +93,7 @@ fn build_decoder_info(config: &AlacConfig) -> [u8; 48] {
 /// Circular RTP packet buffer with decrypt-on-queue and ALAC decode.
 ///
 /// Packets are inserted by [`queue`](Self::queue) and consumed by
-/// [`dequeue`](Self::dequeue). The buffer holds up to [`RAOP_BUFFER_LENGTH`]
+/// [`dequeue`](Self::dequeue). The buffer holds a fixed number of
 /// frames. Sequence number wrapping is handled correctly.
 ///
 /// # Audio pipeline

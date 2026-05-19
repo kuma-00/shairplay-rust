@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn parse_query_float_multiple_params() {
-        assert_eq!(parse_query_float("/x?a=1&position=3.14&b=2", "position"), Some(3.14));
+        assert_eq!(parse_query_float("/x?a=1&position=2.75&b=2", "position"), Some(2.75));
     }
 
     #[test]

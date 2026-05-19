@@ -691,7 +691,7 @@ mod playfair_tests {
     use super::*;
 
     fn to_hex(d: &[u8]) -> String {
-        d.iter().map(|b| format!("{:02x}", b)).collect()
+        d.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
@@ -728,11 +728,11 @@ mod playfair_tests {
     fn md5_incrementing() {
         let mut block = [0u8; 64];
         let mut key = [0u8; 16];
-        for i in 0..64 {
-            block[i] = i as u8;
+        for (i, b) in block.iter_mut().enumerate() {
+            *b = i as u8;
         }
-        for i in 0..16 {
-            key[i] = (i + 64) as u8;
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = (i + 64) as u8;
         }
         let mut out = [0u8; 16];
         modified_md5(&block, &key, &mut out);
@@ -816,22 +816,21 @@ mod playfair_tests {
         let mut b1 = [0u8; 210];
         let mut b2 = [0u8; 35];
         let mut b3 = [0u8; 132];
-        let b4 = [0u8; 21];
-        for i in 0..20 {
-            b0[i] = i as u8;
+        for (i, b) in b0.iter_mut().enumerate() {
+            *b = i as u8;
         }
-        for i in 0..210 {
-            b1[i] = (i & 0xff) as u8;
+        for (i, b) in b1.iter_mut().enumerate() {
+            *b = (i & 0xff) as u8;
         }
-        for i in 0..35 {
-            b2[i] = (i + 100) as u8;
+        for (i, b) in b2.iter_mut().enumerate() {
+            *b = (i + 100) as u8;
         }
-        for i in 0..132 {
-            b3[i] = (i + 50) as u8;
+        for (i, b) in b3.iter_mut().enumerate() {
+            *b = (i + 50) as u8;
         }
         let mut b4m = [0u8; 21];
-        for i in 0..21 {
-            b4m[i] = (i + 200) as u8;
+        for (i, b) in b4m.iter_mut().enumerate() {
+            *b = (i + 200) as u8;
         }
         garble(&mut b0, &mut b1, &mut b2, &mut b3, &b4m);
         assert_eq!(to_hex(&b0), "000102fb04059ef508090c0b513e73550073129e");

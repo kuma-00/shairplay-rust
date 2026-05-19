@@ -243,11 +243,6 @@ fn aes_ctr_symmetric() {
 }
 
 // ============================================================
-// Hwaddr — vectors from C utils_hwaddr_raop/airplay
-// ============================================================
-#[test]
-#[test]
-// ============================================================
 // Pairing — full handshake roundtrip
 // ============================================================
 #[test]
@@ -256,10 +251,9 @@ fn pairing_handshake_roundtrip() {
     let client = Pairing::generate().unwrap();
 
     let mut server_session = server.create_session();
-    let mut client_session = client.create_session();
 
     // Client sends ECDH + Ed25519 public keys to server
-    let client_ecdh = {
+    {
         // Client generates ephemeral ECDH, but we simulate by doing handshake from client side
         // For a real test, we need both sides to exchange. Let's test server-side only.
         let fake_ecdh = [0x42u8; 32];
@@ -304,8 +298,8 @@ fn fairplay_handshake_response() {
     let mut fp = FairPlay::new();
     let mut req = [0u8; 164];
     req[4] = 0x03;
-    for i in 144..164 {
-        req[i] = i as u8;
+    for (i, b) in req.iter_mut().enumerate().skip(144) {
+        *b = i as u8;
     }
     let res = fp.handshake(&req).unwrap();
     assert_eq!(&res[..4], b"FPLY");
@@ -417,14 +411,12 @@ fn service_info_with_password() {
 // ============================================================
 mod hex {
     pub fn encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
+        data.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 
 #[cfg(all(test, feature = "ap2"))]
 mod ap2_tests {
-    use super::*;
-
     // --- C-verified: per-packet audio decryption ---
     // Generated from libsodium crypto_aead_chacha20poly1305_ietf_encrypt
     // with shk=0x42*32, AAD=timestamp+ssrc, nonce from packet trail
@@ -536,8 +528,8 @@ mod ap2_tests {
 
     #[test]
     fn server_keypair_deterministic() {
-        let (sk1, vk1) = shairplay::crypto::pairing_homekit::server_keypair("TestDevice");
-        let (sk2, vk2) = shairplay::crypto::pairing_homekit::server_keypair("TestDevice");
+        let (_, vk1) = shairplay::crypto::pairing_homekit::server_keypair("TestDevice");
+        let (_, vk2) = shairplay::crypto::pairing_homekit::server_keypair("TestDevice");
         assert_eq!(vk1.as_bytes(), vk2.as_bytes());
         // Different device_id → different key
         let (_, vk3) = shairplay::crypto::pairing_homekit::server_keypair("OtherDevice");
@@ -561,7 +553,7 @@ mod ap2_tests {
     #[test]
     fn c_vector_server_keypair() {
         let (_, vk) = shairplay::crypto::pairing_homekit::server_keypair("AABBCCDD1122");
-        let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+        let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             pk_hex,
             "f336effeaedc188558f1046a97fe5db67cf9c7c1736d9201fb9821985eedf7c1"
@@ -731,7 +723,7 @@ mod frac_edge_tests {
         let frac: u64 = 0xFFFF_FFFF_FFFF_FFFF;
         let ns = ((frac >> 32) * 1_000_000_000) >> 32;
         // Should be ~999999999 (just under 1 second)
-        assert!(ns >= 999_999_000 && ns <= 1_000_000_000, "got {ns}");
+        assert!((999_999_000..=1_000_000_000).contains(&ns), "got {ns}");
     }
 
     #[test]
