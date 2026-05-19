@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.2.0...shairplay-v0.3.0) (2026-05-19)
+
+
+### Features
+
+* **lib:** export video types, mark internal modules doc(hidden) ([32b041e](https://github.com/metaneutrons/shairplay-rust/commit/32b041e144fc4b3cae9b80d327f6ccaf5141b6bf))
+
+
+### Bug Fixes
+
+* **security:** harden protocol handling and input validation ([8288c7b](https://github.com/metaneutrons/shairplay-rust/commit/8288c7b61a3cc9171b64edd4839769b2c9e54289))
+
 ## [0.2.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.1.0...shairplay-v0.2.0) (2026-04-05)
 
 
