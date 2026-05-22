@@ -122,10 +122,10 @@ pub(crate) fn handle_scrub(
     let url = request.url()?;
     let pos = parse_query_float(url, "position")?;
     tracing::debug!(pos, "HLS scrub");
-    if let Ok(mut state) = conn.hls_state.lock() {
-        if let Some(session) = state.session.as_mut() {
-            session.seek(pos);
-        }
+    if let Ok(mut state) = conn.hls_state.lock()
+        && let Some(session) = state.session.as_mut()
+    {
+        session.seek(pos);
     }
     None
 }
@@ -139,10 +139,10 @@ pub(crate) fn handle_rate(
     let url = request.url()?;
     let rate = parse_query_float(url, "value")?;
     tracing::debug!(rate, "HLS rate");
-    if let Ok(mut state) = conn.hls_state.lock() {
-        if let Some(session) = state.session.as_mut() {
-            session.set_rate(rate);
-        }
+    if let Ok(mut state) = conn.hls_state.lock()
+        && let Some(session) = state.session.as_mut()
+    {
+        session.set_rate(rate);
     }
     None
 }

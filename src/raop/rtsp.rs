@@ -198,10 +198,10 @@ pub(crate) fn dispatch(conn: &mut RaopConnection, request: &HttpRequest) -> Http
     }
 
     // --- Middleware: Apple-Challenge ---
-    if let Some(challenge) = request.header("Apple-Challenge") {
-        if let Ok(sig) = conn.rsakey.sign_challenge(challenge, &conn.local_addr, &conn.hwaddr) {
-            response.add_header("Apple-Response", &sig);
-        }
+    if let Some(challenge) = request.header("Apple-Challenge")
+        && let Ok(sig) = conn.rsakey.sign_challenge(challenge, &conn.local_addr, &conn.hwaddr)
+    {
+        response.add_header("Apple-Response", &sig);
     }
 
     // --- Route resolution ---
@@ -277,14 +277,12 @@ fn resolve_record(conn: &RaopConnection) -> Option<Handler> {
 
 /// FLUSH: parse RTP-Info header and flush the buffer inline.
 fn handle_flush_inline(conn: &mut RaopConnection, request: &HttpRequest) {
-    if let Some(rtp_info) = request.header("RTP-Info") {
-        if let Some(seq_str) = rtp_info.strip_prefix("seq=") {
-            if let Ok(next_seq) = seq_str.parse::<i32>() {
-                if let Some(rtp) = &conn.raop_rtp {
-                    rtp.flush(next_seq);
-                }
-            }
-        }
+    if let Some(rtp_info) = request.header("RTP-Info")
+        && let Some(seq_str) = rtp_info.strip_prefix("seq=")
+        && let Ok(next_seq) = seq_str.parse::<i32>()
+        && let Some(rtp) = &conn.raop_rtp
+    {
+        rtp.flush(next_seq);
     }
 }
 

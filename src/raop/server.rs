@@ -155,10 +155,10 @@ impl RaopServerBuilder {
         if self.max_clients == 0 {
             return Err(ServerError::MaxClients(0).into());
         }
-        if let Some(password) = self.password.as_ref() {
-            if password.len() > super::MAX_PASSWORD_LEN {
-                return Err(ServerError::InvalidPassword(password.len()).into());
-            }
+        if let Some(password) = self.password.as_ref()
+            && password.len() > super::MAX_PASSWORD_LEN
+        {
+            return Err(ServerError::InvalidPassword(password.len()).into());
         }
         let rsakey = airport_rsakey();
         let pairing = Arc::new(Pairing::generate()?);

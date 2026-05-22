@@ -114,7 +114,7 @@ pub fn wrap_adts(raw_aac: &[u8], rate: u32, channels: u8) -> Vec<u8> {
 
 /// Persistent AAC decoder using symphonia. Decodes ADTS-wrapped AAC to F32LE PCM.
 pub struct AacDecoder {
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
     sample_rate: u32,
     channels: u8,
 }
@@ -122,39 +122,39 @@ pub struct AacDecoder {
 impl AacDecoder {
     /// Create a new decoder for the given format.
     pub fn new(sample_rate: u32, channels: u8) -> Result<Self, String> {
-        use symphonia::core::audio::Channels;
-        use symphonia::core::codecs::{CODEC_TYPE_AAC, CodecParameters, DecoderOptions};
+        use symphonia::core::audio::{Channels, Position};
+        use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions, well_known::CODEC_ID_AAC};
 
-        let mut params = CodecParameters::new();
-        params.for_codec(CODEC_TYPE_AAC).with_sample_rate(sample_rate);
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_AAC).with_sample_rate(sample_rate);
 
         let ch = match channels {
-            1 => Channels::FRONT_CENTRE,
-            2 => Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
-            6 => {
-                Channels::FRONT_LEFT
-                    | Channels::FRONT_RIGHT
-                    | Channels::FRONT_CENTRE
-                    | Channels::REAR_LEFT
-                    | Channels::REAR_RIGHT
-                    | Channels::LFE1
-            }
-            8 => {
-                Channels::FRONT_LEFT
-                    | Channels::FRONT_RIGHT
-                    | Channels::FRONT_CENTRE
-                    | Channels::SIDE_LEFT
-                    | Channels::SIDE_RIGHT
-                    | Channels::REAR_LEFT
-                    | Channels::REAR_RIGHT
-                    | Channels::LFE1
-            }
-            _ => Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
+            1 => Channels::Positioned(Position::FRONT_CENTER),
+            2 => Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT),
+            6 => Channels::Positioned(
+                Position::FRONT_LEFT
+                    | Position::FRONT_RIGHT
+                    | Position::FRONT_CENTER
+                    | Position::REAR_LEFT
+                    | Position::REAR_RIGHT
+                    | Position::LFE1,
+            ),
+            8 => Channels::Positioned(
+                Position::FRONT_LEFT
+                    | Position::FRONT_RIGHT
+                    | Position::FRONT_CENTER
+                    | Position::SIDE_LEFT
+                    | Position::SIDE_RIGHT
+                    | Position::REAR_LEFT
+                    | Position::REAR_RIGHT
+                    | Position::LFE1,
+            ),
+            _ => Channels::Positioned(Position::FRONT_LEFT | Position::FRONT_RIGHT),
         };
         params.with_channels(ch);
 
         let decoder = symphonia::default::get_codecs()
-            .make(&params, &DecoderOptions::default())
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
             .map_err(|e| format!("AAC decoder init failed: {e}"))?;
 
         Ok(Self {
@@ -166,20 +166,13 @@ impl AacDecoder {
 
     /// Decode a raw AAC frame (without ADTS header) to interleaved F32 PCM.
     pub fn decode(&mut self, raw_aac: &[u8]) -> Option<Vec<u8>> {
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::formats::Packet;
+        use symphonia::core::packet::PacketRef;
+        use symphonia::core::units::{Duration, Timestamp};
 
-        let packet = Packet::new_from_slice(0, 0, 1024, raw_aac);
-        let decoded = self.decoder.decode(&packet).ok()?;
-        let spec = *decoded.spec();
-        let duration = decoded.capacity() as u64;
-        let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
-        sample_buf.copy_interleaved_ref(decoded);
-        let samples = sample_buf.samples();
-        let mut pcm = Vec::with_capacity(samples.len() * 4);
-        for &s in samples {
-            pcm.extend_from_slice(&s.to_le_bytes());
-        }
+        let packet = PacketRef::new(0, Timestamp::new(0), Duration::new(1024), raw_aac);
+        let decoded = self.decoder.decode_ref(&packet).ok()?;
+        let mut pcm = Vec::new();
+        decoded.copy_bytes_to_vec_interleaved_as::<f32>(&mut pcm);
         Some(pcm)
     }
 

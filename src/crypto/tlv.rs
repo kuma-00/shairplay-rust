@@ -111,11 +111,13 @@ impl TlvValues {
             i += len;
 
             // If same type as last entry and previous chunk was exactly 255 bytes, concatenate
-            if let Some((last_tag, last_val)) = values.entries.last_mut() {
-                if *last_tag == tag && last_val.len() % 255 == 0 && !last_val.is_empty() {
-                    last_val.extend_from_slice(chunk);
-                    continue;
-                }
+            if let Some((last_tag, last_val)) = values.entries.last_mut()
+                && *last_tag == tag
+                && last_val.len() % 255 == 0
+                && !last_val.is_empty()
+            {
+                last_val.extend_from_slice(chunk);
+                continue;
             }
             values.entries.push((tag, chunk.to_vec()));
         }

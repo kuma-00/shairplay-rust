@@ -73,10 +73,10 @@ impl ExampleResampler {
                     ch_vecs[ch].push(s);
                 }
             }
-            if let Ok(input) = SequentialSliceOfVecs::new(&ch_vecs, self.channels, self.chunk_size) {
-                if let Ok(result) = self.resampler.process(&input, 0, None) {
-                    output.extend(result.take_data());
-                }
+            if let Ok(input) = SequentialSliceOfVecs::new(&ch_vecs, self.channels, self.chunk_size)
+                && let Ok(result) = self.resampler.process(&input, 0, None)
+            {
+                output.extend(result.take_data());
             }
         }
         output

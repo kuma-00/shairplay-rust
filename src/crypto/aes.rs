@@ -1,7 +1,7 @@
 //! AES-128 encryption utilities (ECB, CTR) for AP1 audio decryption.
 
 use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{Array, BlockCipherEncrypt, KeyInit};
 
 const BLOCK_SIZE: usize = 16;
 
@@ -21,7 +21,7 @@ impl AesCtr {
     /// Initialize with a 128-bit key and 128-bit nonce/IV.
     /// Equivalent to AES_ctr_set_key with AES_MODE_128.
     pub fn new(key: &[u8; 16], nonce: &[u8; 16]) -> Self {
-        let cipher = Aes128::new(GenericArray::from_slice(key));
+        let cipher = Aes128::new(key.into());
         let mut counter = [0u8; BLOCK_SIZE];
         counter.copy_from_slice(nonce);
         Self {
@@ -48,7 +48,7 @@ impl AesCtr {
         while idx < data.len() {
             if self.available == 0 {
                 // Encrypt counter block (ECB = CBC with zero IV on single block)
-                let mut block = GenericArray::clone_from_slice(&self.counter);
+                let mut block = Array::from(self.counter);
                 self.cipher.encrypt_block(&mut block);
                 self.state.copy_from_slice(&block);
                 self.available = BLOCK_SIZE;

@@ -116,7 +116,7 @@ impl Base64 {
             }
         }
 
-        if inbuf.len() % 4 != 0 {
+        if !inbuf.len().is_multiple_of(4) {
             return None;
         }
 

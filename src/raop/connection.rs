@@ -132,10 +132,10 @@ impl ConnectionHandler for RaopConnectionHandler {
 
         // Queue encryption activation for AFTER this response is sent
         #[cfg(feature = "ap2")]
-        if self.cipher.is_none() {
-            if let Some(secret) = &self.conn.ap2_shared_secret {
-                self.pending_secret = Some(secret.clone());
-            }
+        if self.cipher.is_none()
+            && let Some(secret) = &self.conn.ap2_shared_secret
+        {
+            self.pending_secret = Some(secret.clone());
         }
 
         resp
@@ -154,16 +154,16 @@ impl ConnectionHandler for RaopConnectionHandler {
 
     fn after_response(&mut self) {
         #[cfg(feature = "ap2")]
-        if self.cipher.is_none() {
-            if let Some(secret) = self.pending_secret.take() {
-                tracing::debug!(secret_len = secret.len(), "Activating cipher from pending_secret");
-                match crate::crypto::chacha_transport::EncryptedChannel::control(&secret) {
-                    Ok(ch) => {
-                        tracing::info!("Encrypted RTSP transport activated");
-                        self.cipher = Some(ch);
-                    }
-                    Err(e) => tracing::warn!("Failed to create cipher: {e}"),
+        if self.cipher.is_none()
+            && let Some(secret) = self.pending_secret.take()
+        {
+            tracing::debug!(secret_len = secret.len(), "Activating cipher from pending_secret");
+            match crate::crypto::chacha_transport::EncryptedChannel::control(&secret) {
+                Ok(ch) => {
+                    tracing::info!("Encrypted RTSP transport activated");
+                    self.cipher = Some(ch);
                 }
+                Err(e) => tracing::warn!("Failed to create cipher: {e}"),
             }
         }
     }

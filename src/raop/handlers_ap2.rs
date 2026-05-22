@@ -490,48 +490,47 @@ pub(crate) fn handle_setup(
         // The video connection (separate RTSP session) reads them from shared state.
         #[cfg(feature = "video")]
         {
-            if let Some(ekey_data) = dict.get("ekey").and_then(|v| v.as_data()) {
-                if ekey_data.len() == 72 {
-                    if let Ok(input) = <[u8; 72]>::try_from(ekey_data) {
-                        match conn.fairplay.decrypt(&input) {
-                            Ok(fp_key) => {
-                                // SHA-512 two-step: hash FairPlay key with ECDH shared secret
-                                // Stage 2: hash with ECDH only if AP2 pairing was used.
-                                // With UxPlay-style features (bit 27 off), no pairing occurs
-                                // and the raw FairPlay key is used directly.
-                                let derived = if let Some(ref secret) = conn.ap2_shared_secret {
-                                    use sha2::{Digest, Sha512};
-                                    let mut hasher = Sha512::new();
-                                    hasher.update(fp_key);
-                                    hasher.update(secret);
-                                    let hash = hasher.finalize();
-                                    let mut key = [0u8; 16];
-                                    key.copy_from_slice(&hash[..16]);
-                                    key
-                                } else {
-                                    fp_key
-                                };
-                                conn.ekey = Some(derived);
-                                // Store in shared state for the video connection
-                                if let Ok(mut shared) = conn.shared_video_ekey.write() {
-                                    *shared = Some(derived);
-                                    tracing::debug!("Video ekey stored in shared state");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("FairPlay decrypt failed: {e:?}");
-                            }
+            if let Some(ekey_data) = dict.get("ekey").and_then(|v| v.as_data())
+                && ekey_data.len() == 72
+                && let Ok(input) = <[u8; 72]>::try_from(ekey_data)
+            {
+                match conn.fairplay.decrypt(&input) {
+                    Ok(fp_key) => {
+                        // SHA-512 two-step: hash FairPlay key with ECDH shared secret
+                        // Stage 2: hash with ECDH only if AP2 pairing was used.
+                        // With UxPlay-style features (bit 27 off), no pairing occurs
+                        // and the raw FairPlay key is used directly.
+                        let derived = if let Some(ref secret) = conn.ap2_shared_secret {
+                            use sha2::{Digest, Sha512};
+                            let mut hasher = Sha512::new();
+                            hasher.update(fp_key);
+                            hasher.update(secret);
+                            let hash = hasher.finalize();
+                            let mut key = [0u8; 16];
+                            key.copy_from_slice(&hash[..16]);
+                            key
+                        } else {
+                            fp_key
+                        };
+                        conn.ekey = Some(derived);
+                        // Store in shared state for the video connection
+                        if let Ok(mut shared) = conn.shared_video_ekey.write() {
+                            *shared = Some(derived);
+                            tracing::debug!("Video ekey stored in shared state");
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!("FairPlay decrypt failed: {e:?}");
                     }
                 }
             }
-            if let Some(eiv_data) = dict.get("eiv").and_then(|v| v.as_data()) {
-                if let Ok(iv) = <[u8; 16]>::try_from(eiv_data) {
-                    conn.eiv = Some(iv);
-                    if let Ok(mut shared) = conn.shared_video_eiv.write() {
-                        *shared = Some(iv);
-                        tracing::debug!("Video eiv stored in shared state");
-                    }
+            if let Some(eiv_data) = dict.get("eiv").and_then(|v| v.as_data())
+                && let Ok(iv) = <[u8; 16]>::try_from(eiv_data)
+            {
+                conn.eiv = Some(iv);
+                if let Ok(mut shared) = conn.shared_video_eiv.write() {
+                    *shared = Some(iv);
+                    tracing::debug!("Video eiv stored in shared state");
                 }
             }
         }
@@ -577,61 +576,60 @@ pub(crate) fn handle_setup(
 
         // Derive event channel encryption keys from shared secret (AP2 only).
         // In legacy mode there's no shared secret — skip the encrypted event channel.
-        if let Some(shared_secret) = conn.ap2_shared_secret.as_ref() {
-            if let Ok(event_channel_cipher) = crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret) {
-                // Spawn bidirectional event channel
-                let event_sender = {
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Some(shared_secret) = conn.ap2_shared_secret.as_ref()
+            && let Ok(event_channel_cipher) = crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret)
+        {
+            // Spawn bidirectional event channel
+            let event_sender = {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-                    // Queue updateInfo so it's sent immediately when client connects
-                    let mut update_info = plist::Dictionary::new();
-                    update_info.insert("type".into(), plist::Value::String("updateInfo".into()));
-                    let mut value = plist::Dictionary::new();
-                    value.insert(
-                        "statusFlags".into(),
-                        plist::Value::Integer((crate::net::mdns::AP2_STATUS_FLAGS as i64).into()),
+                // Queue updateInfo so it's sent immediately when client connects
+                let mut update_info = plist::Dictionary::new();
+                update_info.insert("type".into(), plist::Value::String("updateInfo".into()));
+                let mut value = plist::Dictionary::new();
+                value.insert(
+                    "statusFlags".into(),
+                    plist::Value::Integer((crate::net::mdns::AP2_STATUS_FLAGS as i64).into()),
+                );
+                value.insert(
+                    "features".into(),
+                    plist::Value::Integer((crate::net::features::receiver_features() as i64).into()),
+                );
+                value.insert(
+                    "model".into(),
+                    plist::Value::String(crate::net::mdns::GLOBAL_MODEL.into()),
+                );
+                value.insert(
+                    "sourceVersion".into(),
+                    plist::Value::String(crate::net::mdns::AP2_SRCVERS.into()),
+                );
+                value.insert(
+                    "protocolVersion".into(),
+                    plist::Value::String(crate::net::mdns::AP2_PROTOVERS.into()),
+                );
+                update_info.insert("value".into(), plist::Value::Dictionary(value));
+                let mut body = Vec::new();
+                if plist::to_writer_binary(&mut body, &update_info).is_ok() {
+                    let rtsp = format!(
+                        "POST /command RTSP/1.0\r\nContent-Length: {}\r\nContent-Type: application/x-apple-binary-plist\r\nCSeq: 0\r\n\r\n",
+                        body.len()
                     );
-                    value.insert(
-                        "features".into(),
-                        plist::Value::Integer((crate::net::features::receiver_features() as i64).into()),
-                    );
-                    value.insert(
-                        "model".into(),
-                        plist::Value::String(crate::net::mdns::GLOBAL_MODEL.into()),
-                    );
-                    value.insert(
-                        "sourceVersion".into(),
-                        plist::Value::String(crate::net::mdns::AP2_SRCVERS.into()),
-                    );
-                    value.insert(
-                        "protocolVersion".into(),
-                        plist::Value::String(crate::net::mdns::AP2_PROTOVERS.into()),
-                    );
-                    update_info.insert("value".into(), plist::Value::Dictionary(value));
-                    let mut body = Vec::new();
-                    if plist::to_writer_binary(&mut body, &update_info).is_ok() {
-                        let rtsp = format!(
-                            "POST /command RTSP/1.0\r\nContent-Length: {}\r\nContent-Type: application/x-apple-binary-plist\r\nCSeq: 0\r\n\r\n",
-                            body.len()
-                        );
-                        let mut msg = rtsp.into_bytes();
-                        msg.extend_from_slice(&body);
-                        let _ = tx.send(msg);
-                        tracing::debug!("updateInfo queued for event channel");
+                    let mut msg = rtsp.into_bytes();
+                    msg.extend_from_slice(&body);
+                    let _ = tx.send(msg);
+                    tracing::debug!("updateInfo queued for event channel");
+                }
+
+                let sender = crate::raop::event_channel::EventSender::from_tx(tx);
+                tokio::spawn(async move {
+                    if let Ok((stream, addr)) = event_listener.accept().await {
+                        tracing::info!(%addr, "Event channel client connected");
+                        crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx).await;
                     }
-
-                    let sender = crate::raop::event_channel::EventSender::from_tx(tx);
-                    tokio::spawn(async move {
-                        if let Ok((stream, addr)) = event_listener.accept().await {
-                            tracing::info!(%addr, "Event channel client connected");
-                            crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx)
-                                .await;
-                        }
-                    });
-                    sender
-                };
-                conn.event_sender = Some(event_sender);
-            }
+                });
+                sender
+            };
+            conn.event_sender = Some(event_sender);
         }
 
         // In legacy mode, event channel is not encrypted — return port 0 like UxPlay.
@@ -740,13 +738,12 @@ pub(crate) fn handle_set_peers(
     request: &HttpRequest,
     _response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
-    if let Some(data) = request.data() {
-        if let Ok(plist_val) = plist::from_bytes::<plist::Value>(data) {
-            if let Some(arr) = plist_val.as_array() {
-                let peers: Vec<&str> = arr.iter().filter_map(|v| v.as_string()).collect();
-                tracing::debug!(?peers, "SETPEERS");
-            }
-        }
+    if let Some(data) = request.data()
+        && let Ok(plist_val) = plist::from_bytes::<plist::Value>(data)
+        && let Some(arr) = plist_val.as_array()
+    {
+        let peers: Vec<&str> = arr.iter().filter_map(|v| v.as_string()).collect();
+        tracing::debug!(?peers, "SETPEERS");
     }
     None
 }
@@ -758,21 +755,21 @@ pub(crate) fn handle_flush_buffered(
     request: &HttpRequest,
     _response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
-    if let Some(data) = request.data() {
-        if let Ok(plist_val) = plist::from_bytes::<plist::Value>(data) {
-            let dict = plist_val.as_dictionary();
-            let from_seq = dict
-                .and_then(|d| d.get("flushFromSeq"))
-                .and_then(|v| v.as_unsigned_integer())
-                .unwrap_or(0) as u32;
-            let until_seq = dict
-                .and_then(|d| d.get("flushUntilSeq"))
-                .and_then(|v| v.as_unsigned_integer())
-                .unwrap_or(0) as u32;
-            tracing::debug!(from_seq, until_seq, "FLUSHBUFFERED");
-            if let Some(cmd) = &conn.playout_cmd {
-                let _ = cmd.send(crate::raop::buffered_audio::PlayoutCommand::Flush { from_seq, until_seq });
-            }
+    if let Some(data) = request.data()
+        && let Ok(plist_val) = plist::from_bytes::<plist::Value>(data)
+    {
+        let dict = plist_val.as_dictionary();
+        let from_seq = dict
+            .and_then(|d| d.get("flushFromSeq"))
+            .and_then(|v| v.as_unsigned_integer())
+            .unwrap_or(0) as u32;
+        let until_seq = dict
+            .and_then(|d| d.get("flushUntilSeq"))
+            .and_then(|v| v.as_unsigned_integer())
+            .unwrap_or(0) as u32;
+        tracing::debug!(from_seq, until_seq, "FLUSHBUFFERED");
+        if let Some(cmd) = &conn.playout_cmd {
+            let _ = cmd.send(crate::raop::buffered_audio::PlayoutCommand::Flush { from_seq, until_seq });
         }
     }
     None
@@ -814,14 +811,13 @@ pub(crate) fn handle_command(
     request: &HttpRequest,
     _response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
-    if let Some(data) = request.data() {
-        if let Ok(plist_val) = plist::from_bytes::<plist::Value>(data) {
-            if let Some(dict) = plist_val.as_dictionary() {
-                let cmd_type = dict.get("type").and_then(|v| v.as_string()).unwrap_or("unknown");
-                tracing::debug!(cmd_type, "POST /command");
-                if cmd_type == "updateMRSupportedCommands" {}
-            }
-        }
+    if let Some(data) = request.data()
+        && let Ok(plist_val) = plist::from_bytes::<plist::Value>(data)
+        && let Some(dict) = plist_val.as_dictionary()
+    {
+        let cmd_type = dict.get("type").and_then(|v| v.as_string()).unwrap_or("unknown");
+        tracing::debug!(cmd_type, "POST /command");
+        if cmd_type == "updateMRSupportedCommands" {}
     }
     None
 }
@@ -833,13 +829,12 @@ pub(crate) fn handle_audio_mode(
     request: &HttpRequest,
     _response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
-    if let Some(data) = request.data() {
-        if let Ok(plist_val) = plist::from_bytes::<plist::Value>(data) {
-            if let Some(dict) = plist_val.as_dictionary() {
-                let mode = dict.get("audioMode").and_then(|v| v.as_string()).unwrap_or("unknown");
-                tracing::debug!(mode, "POST /audioMode");
-            }
-        }
+    if let Some(data) = request.data()
+        && let Ok(plist_val) = plist::from_bytes::<plist::Value>(data)
+        && let Some(dict) = plist_val.as_dictionary()
+    {
+        let mode = dict.get("audioMode").and_then(|v| v.as_string()).unwrap_or("unknown");
+        tracing::debug!(mode, "POST /audioMode");
     }
     None
 }

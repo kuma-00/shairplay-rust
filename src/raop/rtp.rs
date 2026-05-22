@@ -245,8 +245,8 @@ impl RaopRtp {
                     tokio::select! {
                         // Data channel: audio RTP packets.
                         result = dsock.recv_from(&mut data_packet) => {
-                            if let Ok((len, _)) = result {
-                                if len >= 12 {
+                            if let Ok((len, _)) = result
+                                && len >= 12 {
                                     let mut buf = buffer.lock().await;
                                     buf.queue(&data_packet[..len], true);
                                     while let Some(samples) = buf.dequeue(no_resend) {
@@ -263,17 +263,15 @@ impl RaopRtp {
                                         }
                                     }
                                 }
-                            }
                         }
                         // Control channel: retransmit responses (payload type 0x56).
                         result = csock.recv_from(&mut ctrl_packet) => {
-                            if let Ok((len, _)) = result {
-                                if len >= 12 && (ctrl_packet[1] & !0x80) == 0x56 {
+                            if let Ok((len, _)) = result
+                                && len >= 12 && (ctrl_packet[1] & !0x80) == 0x56 {
                                     let mut buf = buffer.lock().await;
                                     // Retransmit packets have a 4-byte header before the original RTP.
                                     if len > 4 { buf.queue(&ctrl_packet[4..len], true); }
                                 }
-                            }
                         }
                         _ = shutdown_rx.changed() => break,
                     }

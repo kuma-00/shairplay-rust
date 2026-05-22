@@ -6,7 +6,7 @@
 //! packets and optional retransmit requests for gaps.
 
 use crate::codec::alac::{AlacConfig, AlacDecoder};
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
+use aes::cipher::{BlockModeDecrypt, KeyIvInit};
 
 /// AES-128 key length in bytes.
 pub const RAOP_AESKEY_LEN: usize = 16;
@@ -211,10 +211,10 @@ impl RaopBuffer {
         let mut packet_buf = vec![0u8; payload.len()];
 
         if encrypted_len > 0 {
-            let decryptor = Aes128CbcDec::new(self.aeskey[..].into(), self.aesiv[..].into());
+            let decryptor = Aes128CbcDec::new((&self.aeskey).into(), (&self.aesiv).into());
             let mut encrypted = payload[..encrypted_len].to_vec();
             decryptor
-                .decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut encrypted)
+                .decrypt_padded::<aes::cipher::block_padding::NoPadding>(&mut encrypted)
                 .unwrap_or(&[]);
             packet_buf[..encrypted_len].copy_from_slice(&encrypted);
         }
