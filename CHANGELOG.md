@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.3.0...shairplay-v0.3.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **deps:** update crates to latest stable versions ([eb13f6d](https://github.com/metaneutrons/shairplay-rust/commit/eb13f6dfc9018e8cfa40775fbfccd508c078b70c))
+
 ## [0.3.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.2.0...shairplay-v0.3.0) (2026-05-19)
 
 
