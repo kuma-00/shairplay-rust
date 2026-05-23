@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.4.0...shairplay-v0.5.0) (2026-05-23)
+
+
+### Features
+
+* **ap2:** add runtime AirPlayMode selection ([be2cc15](https://github.com/metaneutrons/shairplay-rust/commit/be2cc15cfe163c89f0440210827e0e27db10f6b6))
+
 ## [0.4.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.3.1...shairplay-v0.4.0) (2026-05-23)
 
 
