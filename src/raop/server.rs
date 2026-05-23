@@ -28,6 +28,24 @@ fn random_hwaddr() -> Vec<u8> {
     hwaddr.to_vec()
 }
 
+#[cfg(feature = "ap2")]
+fn derive_pi_from_hwaddr(hwaddr: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(hwaddr);
+    let hash = hasher.finalize();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3],
+        hash[4], hash[5],
+        (hash[6] & 0x0f) | 0x40, // version 4
+        hash[7],
+        (hash[8] & 0x3f) | 0x80, // variant 1
+        hash[9],
+        hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]
+    )
+}
+
 /// Builder for [`RaopServer`].
 pub struct RaopServerBuilder {
     max_clients: usize,
@@ -168,6 +186,11 @@ impl RaopServerBuilder {
             None => random_hwaddr(),
         };
 
+        #[cfg(feature = "ap2")]
+        let pairing_id = derive_pi_from_hwaddr(&hwaddr);
+        #[cfg(feature = "ap2")]
+        let airplay_name = self.name.clone();
+
         let shared = Arc::new(RaopShared {
             rsakey,
             pairing,
@@ -188,6 +211,10 @@ impl RaopServerBuilder {
             video_ekey: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "video")]
             video_eiv: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "ap2")]
+            pairing_id,
+            #[cfg(feature = "ap2")]
+            airplay_name,
             #[cfg(feature = "hls")]
             hls_handler: self.hls_handler,
         });
@@ -266,7 +293,7 @@ impl RaopServer {
             let device_id = crate::util::hwaddr_airplay(&self.hwaddr);
             let (_, vk) = crate::crypto::pairing_homekit::server_keypair(&device_id);
             let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-            let pi = uuid::Uuid::new_v4().to_string();
+            let pi = self.shared.pairing_id.clone();
             AirPlayServiceInfo::new_airplay2(
                 &self.name,
                 self.httpd.port(),

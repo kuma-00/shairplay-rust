@@ -33,6 +33,10 @@ pub(crate) struct RaopShared {
     pub(crate) video_ekey: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
     #[cfg(feature = "video")]
     pub(crate) video_eiv: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
+    #[cfg(feature = "ap2")]
+    pub(crate) pairing_id: String,
+    #[cfg(feature = "ap2")]
+    pub(crate) airplay_name: String,
     #[cfg(feature = "hls")]
     pub(crate) hls_handler: Option<Arc<dyn crate::raop::hls::HlsHandler>>,
 }
@@ -63,6 +67,10 @@ impl HttpdCallbacks for RaopShared {
             handler: self.handler.clone(),
             #[cfg(feature = "ap2")]
             device_id: crate::util::hwaddr_airplay(&self.hwaddr),
+            #[cfg(feature = "ap2")]
+            pairing_id: self.pairing_id.clone(),
+            #[cfg(feature = "ap2")]
+            airplay_name: self.airplay_name.clone(),
             #[cfg(feature = "ap2")]
             srp_server: None,
             #[cfg(feature = "ap2")]

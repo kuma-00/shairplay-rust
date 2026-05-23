@@ -580,6 +580,42 @@ mod ap2_tests {
         assert_eq!(total, 1712345678250000000);
     }
 
+    #[test]
+    fn test_airplay2_persistent_identity() {
+        use shairplay::raop::{RaopServer, AudioHandler, AudioFormat, AudioSession};
+        use std::sync::Arc;
+
+        struct DummyHandler;
+        impl AudioHandler for DummyHandler {
+            fn audio_init(&self, _format: AudioFormat) -> Box<dyn AudioSession> {
+                struct DummySession;
+                impl AudioSession for DummySession {
+                    fn audio_process(&mut self, _samples: &[f32]) {}
+                }
+                Box::new(DummySession)
+            }
+        }
+
+        let hw = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
+        let handler = Arc::new(DummyHandler);
+        let server = RaopServer::builder()
+            .name("Test Speaker")
+            .hwaddr(hw)
+            .build(handler)
+            .unwrap();
+
+        let info1 = server.service_info();
+        let info2 = server.service_info();
+
+        let pi1 = info1.airplay_txt.iter().find(|(k, _)| k == "pi").map(|(_, v)| v.as_str()).unwrap();
+        let pi2 = info2.airplay_txt.iter().find(|(k, _)| k == "pi").map(|(_, v)| v.as_str()).unwrap();
+
+        assert_eq!(pi1, pi2, "Pairing ID must be stable across queries");
+        assert_eq!(pi1.len(), 36, "Pairing ID should be a valid formatted UUID string");
+
+        assert!(pi1.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+    }
+
     fn hex_decode(s: &str) -> Vec<u8> {
         (0..s.len())
             .step_by(2)

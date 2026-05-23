@@ -33,6 +33,10 @@ pub(crate) struct RaopConnection {
     #[cfg(feature = "ap2")]
     pub device_id: String,
     #[cfg(feature = "ap2")]
+    pub pairing_id: String,
+    #[cfg(feature = "ap2")]
+    pub airplay_name: String,
+    #[cfg(feature = "ap2")]
     pub srp_server: Option<SrpServer>,
     #[cfg(feature = "ap2")]
     pub pair_verify: Option<PairVerifyServer>,
