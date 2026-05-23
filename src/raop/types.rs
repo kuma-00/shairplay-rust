@@ -2,6 +2,22 @@
 
 use std::sync::Arc;
 
+/// Runtime protocol mode selection.
+///
+/// When the `ap2` feature is enabled, this controls whether the server
+/// advertises itself as an AirPlay 1 (classic) or AirPlay 2 receiver.
+/// Both modes share the same RTSP listener — the difference is in mDNS
+/// advertisement and feature negotiation.
+#[cfg(feature = "ap2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AirPlayMode {
+    /// Classic AirPlay 1: ALAC/AAC over RTP, RSA encryption, NTP timing.
+    AirPlay1,
+    /// AirPlay 2: buffered audio, ChaCha20 encryption, SRP pairing, PTP timing.
+    #[default]
+    AirPlay2,
+}
+
 /// Audio codec type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCodec {

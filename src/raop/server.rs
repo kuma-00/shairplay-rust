@@ -64,6 +64,8 @@ pub struct RaopServerBuilder {
     bind: BindConfig,
     #[cfg(feature = "ap2")]
     pairing_store: Option<Arc<dyn PairingStore>>,
+    #[cfg(feature = "ap2")]
+    mode: AirPlayMode,
     output_sample_rate: Option<u32>,
     output_max_channels: Option<u8>,
     #[cfg(feature = "ap2")]
@@ -91,6 +93,8 @@ impl RaopServerBuilder {
             bind: BindConfig::default(),
             #[cfg(feature = "ap2")]
             pairing_store: None,
+            #[cfg(feature = "ap2")]
+            mode: AirPlayMode::default(),
             output_sample_rate: None,
             output_max_channels: None,
             #[cfg(feature = "ap2")]
@@ -138,6 +142,16 @@ impl RaopServerBuilder {
     #[cfg(feature = "ap2")]
     pub fn pairing_store(mut self, store: Arc<dyn PairingStore>) -> Self {
         self.pairing_store = Some(store);
+        self
+    }
+
+    /// Set the AirPlay protocol mode. Default: [`AirPlayMode::AirPlay2`].
+    ///
+    /// Use [`AirPlayMode::AirPlay1`] to advertise as a classic receiver even
+    /// when the `ap2` feature is compiled in.
+    #[cfg(feature = "ap2")]
+    pub fn mode(mut self, mode: AirPlayMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -238,6 +252,8 @@ impl RaopServerBuilder {
             bind: self.bind,
             name: self.name,
             hwaddr,
+            #[cfg(feature = "ap2")]
+            mode: self.mode,
         })
     }
 }
@@ -254,6 +270,8 @@ pub struct RaopServer {
     bind: BindConfig,
     name: String,
     hwaddr: Vec<u8>,
+    #[cfg(feature = "ap2")]
+    mode: AirPlayMode,
 }
 
 impl RaopServer {
@@ -274,7 +292,9 @@ impl RaopServer {
             let mut mdns = MdnsService::new()?;
             mdns.register_raop(&info)?;
             #[cfg(feature = "ap2")]
-            mdns.register_airplay(&info)?;
+            if self.mode == AirPlayMode::AirPlay2 {
+                mdns.register_airplay(&info)?;
+            }
             self.mdns = Some(mdns);
         }
 
@@ -299,27 +319,26 @@ impl RaopServer {
     pub fn service_info(&self) -> AirPlayServiceInfo {
         #[cfg(feature = "ap2")]
         {
-            let device_id = crate::util::hwaddr_airplay(&self.hwaddr);
-            let (_, vk) = crate::crypto::pairing_homekit::server_keypair(&device_id);
-            let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
-            let pi = self.shared.pairing_id.clone();
-            AirPlayServiceInfo::new_airplay2(
-                &self.name,
-                self.httpd.port(),
-                &self.hwaddr,
-                !self.shared.password.is_empty(),
-                &pk_hex,
-                &pi,
-            )
+            if self.mode == AirPlayMode::AirPlay2 {
+                let device_id = crate::util::hwaddr_airplay(&self.hwaddr);
+                let (_, vk) = crate::crypto::pairing_homekit::server_keypair(&device_id);
+                let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+                let pi = self.shared.pairing_id.clone();
+                return AirPlayServiceInfo::new_airplay2(
+                    &self.name,
+                    self.httpd.port(),
+                    &self.hwaddr,
+                    !self.shared.password.is_empty(),
+                    &pk_hex,
+                    &pi,
+                );
+            }
         }
-        #[cfg(not(feature = "ap2"))]
-        {
-            AirPlayServiceInfo::new(
-                &self.name,
-                self.httpd.port(),
-                &self.hwaddr,
-                !self.shared.password.is_empty(),
-            )
-        }
+        AirPlayServiceInfo::new(
+            &self.name,
+            self.httpd.port(),
+            &self.hwaddr,
+            !self.shared.password.is_empty(),
+        )
     }
 }
