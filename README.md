@@ -8,7 +8,7 @@
 [![crates.io](https://img.shields.io/crates/v/shairplay.svg)](https://crates.io/crates/shairplay)
 [![docs.rs](https://docs.rs/shairplay/badge.svg)](https://docs.rs/shairplay)
 [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 
 A complete AirPlay audio and video receiver as a Rust library. Supports both classic AirPlay (AP1) and AirPlay 2 (AP2) with buffered audio, encrypted transport, HomeKit pairing, and screen mirroring. `#![forbid(unsafe_code)]`.
 
@@ -82,6 +82,13 @@ let mut server = RaopServer::builder()
     .output_sample_rate(48000)
     .output_max_channels(2)
     .build(Arc::new(MyHandler))?;
+
+// Or force AP1 mode at runtime (even with ap2 feature compiled in):
+use shairplay::AirPlayMode;
+let mut server = RaopServer::builder()
+    .name("My Speaker")
+    .mode(AirPlayMode::AirPlay1)
+    .build(Arc::new(MyHandler))?;
 ```
 
 ## Builder Options
@@ -97,6 +104,7 @@ let mut server = RaopServer::builder()
 | `.output_sample_rate()` | source rate | `resample` | Resample all audio to this rate |
 | `.output_max_channels()` | source channels | `resample` | Mix down to this channel count |
 | `.pin()` | `"3939"` | `ap2` | PIN for HomeKit pairing |
+| `.mode()` | `AirPlayMode::AirPlay2` | `ap2` | Runtime protocol mode (AP1 or AP2) |
 | `.pairing_store()` | `MemoryPairingStore` | `ap2` | Persistent key storage |
 | `.video_handler()` | none | `video` | Video session factory |
 | `.hls_handler()` | none | `hls` | HLS video playback handler |
@@ -208,7 +216,7 @@ src/
 
 ## Test Coverage
 
-152 tests including 17 C-verified pairing vectors from [pair_ap](https://github.com/ejurgensen/pair_ap) and 10 C-verified FairPlay vectors generated from the original [shairplay](https://github.com/juhovh/shairplay) C source:
+158 tests including 17 C-verified pairing vectors from [pair_ap](https://github.com/ejurgensen/pair_ap) and 10 C-verified FairPlay vectors generated from the original [shairplay](https://github.com/juhovh/shairplay) C source:
 
 ```plain
 cargo test                    # AP1 tests
