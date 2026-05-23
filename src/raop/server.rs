@@ -36,13 +36,22 @@ fn derive_pi_from_hwaddr(hwaddr: &[u8]) -> String {
     let hash = hasher.finalize();
     format!(
         "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        hash[0], hash[1], hash[2], hash[3],
-        hash[4], hash[5],
+        hash[0],
+        hash[1],
+        hash[2],
+        hash[3],
+        hash[4],
+        hash[5],
         (hash[6] & 0x0f) | 0x40, // version 4
         hash[7],
         (hash[8] & 0x3f) | 0x80, // variant 1
         hash[9],
-        hash[10], hash[11], hash[12], hash[13], hash[14], hash[15]
+        hash[10],
+        hash[11],
+        hash[12],
+        hash[13],
+        hash[14],
+        hash[15]
     )
 }
 

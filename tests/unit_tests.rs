@@ -582,7 +582,7 @@ mod ap2_tests {
 
     #[test]
     fn test_airplay2_persistent_identity() {
-        use shairplay::raop::{RaopServer, AudioHandler, AudioFormat, AudioSession};
+        use shairplay::raop::{AudioFormat, AudioHandler, AudioSession, RaopServer};
         use std::sync::Arc;
 
         struct DummyHandler;
@@ -607,8 +607,18 @@ mod ap2_tests {
         let info1 = server.service_info();
         let info2 = server.service_info();
 
-        let pi1 = info1.airplay_txt.iter().find(|(k, _)| k == "pi").map(|(_, v)| v.as_str()).unwrap();
-        let pi2 = info2.airplay_txt.iter().find(|(k, _)| k == "pi").map(|(_, v)| v.as_str()).unwrap();
+        let pi1 = info1
+            .airplay_txt
+            .iter()
+            .find(|(k, _)| k == "pi")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        let pi2 = info2
+            .airplay_txt
+            .iter()
+            .find(|(k, _)| k == "pi")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
 
         assert_eq!(pi1, pi2, "Pairing ID must be stable across queries");
         assert_eq!(pi1.len(), 36, "Pairing ID should be a valid formatted UUID string");

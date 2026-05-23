@@ -203,11 +203,23 @@ pub(crate) fn handle_info(
     #[cfg(feature = "video")]
     if conn.video_handler.is_some() {
         let display = plist::Dictionary::from_iter([
-            ("widthPixels".to_string(), plist::Value::Integer(config::MIRRORING_WIDTH.into())),
-            ("heightPixels".to_string(), plist::Value::Integer(config::MIRRORING_HEIGHT.into())),
+            (
+                "widthPixels".to_string(),
+                plist::Value::Integer(config::MIRRORING_WIDTH.into()),
+            ),
+            (
+                "heightPixels".to_string(),
+                plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
+            ),
             ("uuid".to_string(), plist::Value::String(config::MIRRORING_UUID.into())),
-            ("maxFPS".to_string(), plist::Value::Integer(config::MIRRORING_FPS.into())),
-            ("features".to_string(), plist::Value::Integer(config::MIRRORING_FEATURES.into())),
+            (
+                "maxFPS".to_string(),
+                plist::Value::Integer(config::MIRRORING_FPS.into()),
+            ),
+            (
+                "features".to_string(),
+                plist::Value::Integer(config::MIRRORING_FEATURES.into()),
+            ),
         ]);
         dict.insert(
             "displays".into(),
@@ -556,12 +568,14 @@ pub(crate) fn handle_setup(
 
         if is_rc_only {
             tracing::info!("Remote Control Only connection - establishing event channel");
-            
+
             let event_port_resp = if let Some(shared_secret) = conn.ap2_shared_secret.as_ref() {
                 let event_listener = bind_tcp(bind_addr_for(conn))?;
                 let event_port = event_listener.local_addr().ok()?.port();
-                
-                if let Ok(event_channel_cipher) = crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret) {
+
+                if let Ok(event_channel_cipher) =
+                    crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret)
+                {
                     let event_sender = {
                         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -611,7 +625,7 @@ pub(crate) fn handle_setup(
             } else {
                 0
             };
-            
+
             resp_dict.insert("eventPort".into(), plist::Value::Integer(event_port_resp.into()));
 
             return response.set_plist_body(&resp_dict);

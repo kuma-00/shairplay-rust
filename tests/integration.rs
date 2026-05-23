@@ -509,7 +509,10 @@ mod ap2_tests {
         let resp = String::from_utf8_lossy(&buf[..n]);
 
         assert!(resp.contains("200 OK"), "GET /info should be 200 OK");
-        assert!(resp.contains("Content-Type: application/x-apple-binary-plist"), "must return binary plist");
+        assert!(
+            resp.contains("Content-Type: application/x-apple-binary-plist"),
+            "must return binary plist"
+        );
 
         let header_end = resp.find("\r\n\r\n").unwrap() + 4;
         let body = &buf[header_end..n];
@@ -662,7 +665,7 @@ mod ap2_tests {
         let m4 = TlvValues::decode(&body).expect("M4 TLV");
         assert_eq!(m4.get_type(TlvType::State), Some(&[4u8][..]));
         assert!(m4.get_type(TlvType::Proof).is_some(), "M4 should have server proof");
-        
+
         session_key
     }
 
@@ -682,7 +685,8 @@ mod ap2_tests {
             "Control-Write-Encryption-Key",
             "Control-Salt",
             "Control-Read-Encryption-Key",
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut dict = plist::Dictionary::new();
         dict.insert("isRemoteControlOnly".into(), plist::Value::Boolean(true));
