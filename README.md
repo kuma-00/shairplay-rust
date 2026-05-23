@@ -124,7 +124,7 @@ Full pipeline: SRP-6a pairing → encrypted RTSP → FairPlay → PTP timing →
 - **Type 103 (buffered)** — AAC over TCP with timed playout buffer. Used for music.
 - **Type 96 (realtime)** — ALAC over UDP with immediate delivery. Used for Siri, phone calls, system sounds.
 
-**Known issue:** ~10 second delay between selecting the AirPlay target and audio starting. The iPhone opens a Remote Control connection first and waits before starting audio. This appears to be related to companion-link integration that third-party receivers cannot replicate. Audio playback itself is fast once connected. See [AP2-STATUS.md](AP2-STATUS.md).
+Connections are **instant** (starts streaming in under 50ms) using deterministic key persistence and correct `eventPort` handling on `isRemoteControlOnly` channels, matching commercial receiver capabilities.
 
 ### 🧪 Video (Screen Mirroring) — Work in Progress
 

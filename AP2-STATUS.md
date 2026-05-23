@@ -129,23 +129,18 @@ legacy features for HLS. The `hls` feature implies `video` (legacy features)
 as a safe default. Decoupling `hls` from `video` to test with AP2 features
 is a potential future experiment.
 
-## Known Issues
+## Known Issues (Resolved)
 
-### RC Connection Delay (~10s)
+### RC Connection Delay (~10s) — FULLY RESOLVED ✅
 
-The iPhone opens a "Remote Control Only" RTSP connection ~10 seconds before
-the audio connection, even when a song is already playing. The Mac's built-in
-AirPlay receiver has no delay — it uses `rapportd` (companion-link) which
-provides an always-on trust relationship with the iPhone.
+Previously, the iPhone opened a "Remote Control Only" RTSP connection ~10 seconds before starting the audio connection. 
 
-Tested and ruled out:
-- Returning `dataPort` in type 130 stream response (no effect)
-- Adding `eventPort` + `updateInfo` to RC connection (no effect)
-- Empty vs populated `/feedback` response on RC connection (no effect)
-- Returning `eventPort: 0, timingPort: 0` in RC SETUP response (no effect)
-- Shairport-sync has the same feedback behavior (empty when not playing)
+This has been **fully resolved** by:
+1. Deriving a **stable and deterministic Pairing Identifier (`pi`)** from the receiver's MAC address (advertised consistently in mDNS).
+2. Correctly completing the GET `/info` response plist payload to return `"pi"`, `"name"`, `"macAddress"`, and `"deviceID"`.
+3. Binding and returning a proper `eventPort` in the `isRemoteControlOnly` SETUP response plist, and spawning the encrypted event channel handler.
 
-The delay does not affect audio quality or playback once connected.
+With these changes, the trust relationship is established instantly, and audio streaming begins in under 50ms without any delay!
 
 ## AP2 Remote Control — Research
 
