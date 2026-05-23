@@ -217,6 +217,15 @@ impl HttpResponse {
         self.complete = true;
     }
 
+    /// Set a binary property list body, automatically adding the Content-Type header.
+    #[cfg(feature = "ap2")]
+    pub fn set_plist_body(&mut self, plist_dict: &plist::Dictionary) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        plist::to_writer_binary(&mut buf, plist_dict).ok()?;
+        self.add_header("Content-Type", "application/x-apple-binary-plist");
+        Some(buf)
+    }
+
     /// Mark this response as requiring connection close after sending.
     pub fn set_disconnect(&mut self, disconnect: bool) {
         self.disconnect = disconnect;

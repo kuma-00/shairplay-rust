@@ -24,6 +24,8 @@ pub mod video;
 #[cfg(feature = "video")]
 pub mod video_stream;
 
+pub mod config;
+
 /// Maximum hardware address length in bytes.
 pub const MAX_HWADDR_LEN: usize = 6;
 /// Maximum password length in bytes.

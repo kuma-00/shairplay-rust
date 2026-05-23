@@ -24,6 +24,24 @@ fn bind_udp(addr: std::net::SocketAddr) -> Option<tokio::net::UdpSocket> {
 }
 
 #[cfg(feature = "ap2")]
+impl RaopConnection {
+    /// Decouple network event stream listener spawning from high-level RTSP handlers.
+    pub fn spawn_event_channel(
+        &mut self,
+        event_listener: tokio::net::TcpListener,
+        event_channel_cipher: crate::crypto::chacha_transport::EncryptedChannel,
+        rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
+        tokio::spawn(async move {
+            if let Ok((stream, addr)) = event_listener.accept().await {
+                tracing::info!(%addr, "RC event channel client connected");
+                crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx).await;
+            }
+        });
+    }
+}
+
+#[cfg(feature = "ap2")]
 /// AP2 pair-setup: SRP-6a + HomeKit pairing (M1→M5).
 pub(crate) fn handle_pair_setup(
     conn: &mut RaopConnection,
@@ -153,10 +171,7 @@ pub(crate) fn handle_info(
     _request: &HttpRequest,
     response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
-    use crate::net::mdns;
-
-    let _features_lo = crate::net::features::receiver_features() & 0xFFFFFFFF;
-    let _features_hi = (crate::net::features::receiver_features() >> 32) & 0xFFFFFFFF;
+    use crate::raop::config;
 
     let (_, vk) = crate::crypto::pairing_homekit::server_keypair(&conn.device_id);
     let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
@@ -172,15 +187,15 @@ pub(crate) fn handle_info(
         "features".into(),
         plist::Value::Integer((crate::net::features::receiver_features() as i64).into()),
     );
-    dict.insert("model".into(), plist::Value::String(mdns::GLOBAL_MODEL.into()));
+    dict.insert("model".into(), plist::Value::String(config::GLOBAL_MODEL.into()));
     dict.insert(
         "protocolVersion".into(),
-        plist::Value::String(mdns::AP2_PROTOVERS.into()),
+        plist::Value::String(config::AP2_PROTOVERS.into()),
     );
-    dict.insert("sourceVersion".into(), plist::Value::String(mdns::AP2_SRCVERS.into()));
+    dict.insert("sourceVersion".into(), plist::Value::String(config::AP2_SRCVERS.into()));
     dict.insert(
         "statusFlags".into(),
-        plist::Value::Integer((mdns::AP2_STATUS_FLAGS as i64).into()),
+        plist::Value::Integer((config::AP2_STATUS_FLAGS as i64).into()),
     );
     dict.insert("pk".into(), plist::Value::String(pk_hex));
 
@@ -188,11 +203,11 @@ pub(crate) fn handle_info(
     #[cfg(feature = "video")]
     if conn.video_handler.is_some() {
         let display = plist::Dictionary::from_iter([
-            ("widthPixels".to_string(), plist::Value::Integer(1920.into())),
-            ("heightPixels".to_string(), plist::Value::Integer(1080.into())),
-            ("uuid".to_string(), plist::Value::String("shairplay_display".into())),
-            ("maxFPS".to_string(), plist::Value::Integer(60.into())),
-            ("features".to_string(), plist::Value::Integer(2.into())),
+            ("widthPixels".to_string(), plist::Value::Integer(config::MIRRORING_WIDTH.into())),
+            ("heightPixels".to_string(), plist::Value::Integer(config::MIRRORING_HEIGHT.into())),
+            ("uuid".to_string(), plist::Value::String(config::MIRRORING_UUID.into())),
+            ("maxFPS".to_string(), plist::Value::Integer(config::MIRRORING_FPS.into())),
+            ("features".to_string(), plist::Value::Integer(config::MIRRORING_FEATURES.into())),
         ]);
         dict.insert(
             "displays".into(),
@@ -200,11 +215,7 @@ pub(crate) fn handle_info(
         );
     }
 
-    let mut buf = Vec::new();
-    plist::to_writer_binary(&mut buf, &dict).ok()?;
-
-    response.add_header("Content-Type", "application/x-apple-binary-plist");
-    Some(buf)
+    response.set_plist_body(&dict)
 }
 
 #[cfg(feature = "ap2")]
@@ -559,7 +570,7 @@ pub(crate) fn handle_setup(
                         let mut value = plist::Dictionary::new();
                         value.insert(
                             "statusFlags".into(),
-                            plist::Value::Integer((crate::net::mdns::AP2_STATUS_FLAGS as i64).into()),
+                            plist::Value::Integer((crate::raop::config::AP2_STATUS_FLAGS as i64).into()),
                         );
                         value.insert(
                             "features".into(),
@@ -567,15 +578,15 @@ pub(crate) fn handle_setup(
                         );
                         value.insert(
                             "model".into(),
-                            plist::Value::String(crate::net::mdns::GLOBAL_MODEL.into()),
+                            plist::Value::String(crate::raop::config::GLOBAL_MODEL.into()),
                         );
                         value.insert(
                             "sourceVersion".into(),
-                            plist::Value::String(crate::net::mdns::AP2_SRCVERS.into()),
+                            plist::Value::String(crate::raop::config::AP2_SRCVERS.into()),
                         );
                         value.insert(
                             "protocolVersion".into(),
-                            plist::Value::String(crate::net::mdns::AP2_PROTOVERS.into()),
+                            plist::Value::String(crate::raop::config::AP2_PROTOVERS.into()),
                         );
                         update_info.insert("value".into(), plist::Value::Dictionary(value));
                         let mut body = Vec::new();
@@ -591,12 +602,7 @@ pub(crate) fn handle_setup(
                         }
 
                         let sender = crate::raop::event_channel::EventSender::from_tx(tx);
-                        tokio::spawn(async move {
-                            if let Ok((stream, addr)) = event_listener.accept().await {
-                                tracing::info!(%addr, "RC event channel client connected");
-                                crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx).await;
-                            }
-                        });
+                        conn.spawn_event_channel(event_listener, event_channel_cipher, rx);
                         sender
                     };
                     conn.event_sender = Some(event_sender);
@@ -608,10 +614,7 @@ pub(crate) fn handle_setup(
             
             resp_dict.insert("eventPort".into(), plist::Value::Integer(event_port_resp.into()));
 
-            let mut buf = Vec::new();
-            plist::to_writer_binary(&mut buf, &resp_dict).ok()?;
-            response.add_header("Content-Type", "application/x-apple-binary-plist");
-            return Some(buf);
+            return response.set_plist_body(&resp_dict);
         }
 
         if timing == "PTP" {

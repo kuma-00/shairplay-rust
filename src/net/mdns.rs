@@ -38,7 +38,8 @@ pub const RAOP_EK: &str = "1";
 /// Global feature bitmask for AP1 discovery.
 pub const GLOBAL_FEATURES: u32 = 0x7;
 /// Device model identifier.
-pub const GLOBAL_MODEL: &str = "AppleTV2,1";
+/// Device model identifier.
+pub const GLOBAL_MODEL: &str = crate::raop::config::GLOBAL_MODEL;
 /// Software version string.
 pub const GLOBAL_VERSION: &str = "130.14";
 
@@ -46,10 +47,10 @@ pub const GLOBAL_VERSION: &str = "130.14";
 
 /// Status flags (0x4 = audio receiver).
 #[cfg(feature = "ap2")]
-pub const AP2_STATUS_FLAGS: u32 = 0x4;
+pub const AP2_STATUS_FLAGS: u32 = crate::raop::config::AP2_STATUS_FLAGS;
 /// Source version string.
 #[cfg(feature = "ap2")]
-pub const AP2_SRCVERS: &str = "377.40.00";
+pub const AP2_SRCVERS: &str = crate::raop::config::AP2_SRCVERS;
 /// OS version string.
 #[cfg(feature = "ap2")]
 pub const AP2_OSVERS: &str = "15.6";
@@ -58,7 +59,7 @@ pub const AP2_OSVERS: &str = "15.6";
 pub const AP2_FW_VERSION: &str = "77.40.00";
 /// Protocol version string.
 #[cfg(feature = "ap2")]
-pub const AP2_PROTOVERS: &str = "1.1";
+pub const AP2_PROTOVERS: &str = crate::raop::config::AP2_PROTOVERS;
 
 /// mDNS service information for AirPlay network discovery.
 #[derive(Debug, Clone)]

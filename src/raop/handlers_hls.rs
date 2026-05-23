@@ -22,13 +22,13 @@ pub(crate) fn handle_server_info(
     dict.insert("macAddress".into(), plist::Value::String(mac.clone()));
     dict.insert(
         "model".into(),
-        plist::Value::String(crate::net::mdns::GLOBAL_MODEL.into()),
+        plist::Value::String(crate::raop::config::GLOBAL_MODEL.into()),
     );
     dict.insert("osBuildVersion".into(), plist::Value::String("12B435".into()));
     dict.insert("protovers".into(), plist::Value::String("1.0".into()));
     dict.insert(
         "srcvers".into(),
-        plist::Value::String(crate::net::mdns::AP2_SRCVERS.into()),
+        plist::Value::String(crate::raop::config::AP2_SRCVERS.into()),
     );
     dict.insert("vv".into(), plist::Value::Integer(2_i64.into()));
     dict.insert("deviceid".into(), plist::Value::String(mac));
