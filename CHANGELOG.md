@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.3.1...shairplay-v0.4.0) (2026-05-23)
+
+
+### Features
+
+* **ap2:** complete GET /info plist payload and correct eventPort handling on remote control only connections ([8d89127](https://github.com/metaneutrons/shairplay-rust/commit/8d8912794ae6ce9a0b6f53290b7d3f20ecd8abd8))
+* **ap2:** implement stable, deterministic Pairing Identifier (pi) derived from MAC address ([bb996d6](https://github.com/metaneutrons/shairplay-rust/commit/bb996d65afd2c33df57875e97b8f8a3525ab38fa))
+
 ## [0.3.1](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.3.0...shairplay-v0.3.1) (2026-05-22)
 
 
