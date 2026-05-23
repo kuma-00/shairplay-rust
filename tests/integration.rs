@@ -494,6 +494,45 @@ mod ap2_tests {
 
         server.stop().await;
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn ap2_get_info_plist_correctness() {
+        let (mut server, port, _) = start_server().await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+        let req = "GET /info RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+        stream.write_all(req.as_bytes()).await.unwrap();
+
+        let mut buf = vec![0u8; 16384];
+        let n = stream.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+
+        assert!(resp.contains("200 OK"), "GET /info should be 200 OK");
+        assert!(resp.contains("Content-Type: application/x-apple-binary-plist"), "must return binary plist");
+
+        let header_end = resp.find("\r\n\r\n").unwrap() + 4;
+        let body = &buf[header_end..n];
+
+        let cursor = std::io::Cursor::new(body);
+        let plist_val = plist::Value::from_reader(cursor).expect("body should be a valid plist");
+        let dict = plist_val.as_dictionary().expect("plist should be a dictionary");
+
+        assert!(dict.contains_key("pi"), "should contain pairing_id (pi)");
+        assert!(dict.contains_key("name"), "should contain name");
+        assert!(dict.contains_key("macAddress"), "should contain macAddress");
+        assert!(dict.contains_key("deviceID"), "should contain deviceID");
+
+        let pi_val = dict.get("pi").unwrap().as_string().unwrap();
+        let name_val = dict.get("name").unwrap().as_string().unwrap();
+        let mac_val = dict.get("macAddress").unwrap().as_string().unwrap();
+
+        assert_eq!(name_val, "IntegrationTest");
+        assert_eq!(mac_val, "00:11:22:33:44:55");
+        assert_eq!(pi_val.len(), 36);
+
+        server.stop().await;
+    }
 }
 
 #[tokio::test]

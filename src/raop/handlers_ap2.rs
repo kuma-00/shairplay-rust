@@ -164,7 +164,10 @@ pub(crate) fn handle_info(
     let hw = crate::util::hwaddr_airplay(&conn.hwaddr);
 
     let mut dict = plist::Dictionary::new();
-    dict.insert("deviceID".into(), plist::Value::String(hw));
+    dict.insert("deviceID".into(), plist::Value::String(hw.clone()));
+    dict.insert("macAddress".into(), plist::Value::String(hw));
+    dict.insert("pi".into(), plist::Value::String(conn.pairing_id.clone()));
+    dict.insert("name".into(), plist::Value::String(conn.airplay_name.clone()));
     dict.insert(
         "features".into(),
         plist::Value::Integer((crate::net::features::receiver_features() as i64).into()),
@@ -541,8 +544,66 @@ pub(crate) fn handle_setup(
             .unwrap_or(false);
 
         if is_rc_only {
-            tracing::info!("Remote Control Only connection");
-            // RC connections don't need timingPeerInfo or eventPort
+            tracing::info!("Remote Control Only connection - establishing event channel");
+            
+            let event_listener = bind_tcp(bind_addr_for(conn))?;
+            let event_port = event_listener.local_addr().ok()?.port();
+            resp_dict.insert("eventPort".into(), plist::Value::Integer((event_port as i64).into()));
+
+            if let Some(shared_secret) = conn.ap2_shared_secret.as_ref()
+                && let Ok(event_channel_cipher) = crate::crypto::chacha_transport::EncryptedChannel::events(shared_secret)
+            {
+                let event_sender = {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+                    let mut update_info = plist::Dictionary::new();
+                    update_info.insert("type".into(), plist::Value::String("updateInfo".into()));
+                    let mut value = plist::Dictionary::new();
+                    value.insert(
+                        "statusFlags".into(),
+                        plist::Value::Integer((crate::net::mdns::AP2_STATUS_FLAGS as i64).into()),
+                    );
+                    value.insert(
+                        "features".into(),
+                        plist::Value::Integer((crate::net::features::receiver_features() as i64).into()),
+                    );
+                    value.insert(
+                        "model".into(),
+                        plist::Value::String(crate::net::mdns::GLOBAL_MODEL.into()),
+                    );
+                    value.insert(
+                        "sourceVersion".into(),
+                        plist::Value::String(crate::net::mdns::AP2_SRCVERS.into()),
+                    );
+                    value.insert(
+                        "protocolVersion".into(),
+                        plist::Value::String(crate::net::mdns::AP2_PROTOVERS.into()),
+                    );
+                    update_info.insert("value".into(), plist::Value::Dictionary(value));
+                    let mut body = Vec::new();
+                    if plist::to_writer_binary(&mut body, &update_info).is_ok() {
+                        let rtsp = format!(
+                            "POST /command RTSP/1.0\r\nContent-Length: {}\r\nContent-Type: application/x-apple-binary-plist\r\nCSeq: 0\r\n\r\n",
+                            body.len()
+                        );
+                        let mut msg = rtsp.into_bytes();
+                        msg.extend_from_slice(&body);
+                        let _ = tx.send(msg);
+                        tracing::debug!("updateInfo queued for RC event channel");
+                    }
+
+                    let sender = crate::raop::event_channel::EventSender::from_tx(tx);
+                    tokio::spawn(async move {
+                        if let Ok((stream, addr)) = event_listener.accept().await {
+                            tracing::info!(%addr, "RC event channel client connected");
+                            crate::raop::event_channel::EventChannel::handle_stream(stream, event_channel_cipher, rx).await;
+                        }
+                    });
+                    sender
+                };
+                conn.event_sender = Some(event_sender);
+            }
+
             let mut buf = Vec::new();
             plist::to_writer_binary(&mut buf, &resp_dict).ok()?;
             response.add_header("Content-Type", "application/x-apple-binary-plist");
