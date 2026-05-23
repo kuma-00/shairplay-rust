@@ -533,6 +533,196 @@ mod ap2_tests {
 
         server.stop().await;
     }
+
+    async fn perform_transient_pairing(stream: &mut TcpStream) -> [u8; 64] {
+        use num_bigint::BigUint;
+        use sha2::{Digest, Sha512};
+
+        // Helper to send RTSP and read response
+        async fn rtsp_post(stream: &mut TcpStream, url: &str, cseq: u32, body: &[u8]) -> (String, Vec<u8>) {
+            let req = format!(
+                "POST {} RTSP/1.0\r\nCSeq: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                url,
+                cseq,
+                body.len()
+            );
+            stream.write_all(req.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            let mut buf = vec![0u8; 16384];
+            let n = stream.read(&mut buf).await.unwrap();
+            let resp = String::from_utf8_lossy(&buf[..n]).to_string();
+            let header_end = resp.find("\r\n\r\n").map(|p| p + 4).unwrap_or(n);
+            let resp_body = buf[header_end..n].to_vec();
+            (resp, resp_body)
+        }
+
+        // M1: pair-verify (will fail but server accepts it)
+        let mut m1_verify = TlvValues::new();
+        m1_verify.add(TlvType::State as u8, &[1]);
+        m1_verify.add(TlvType::PublicKey as u8, &[0u8; 32]); // dummy key
+        let (resp, _) = rtsp_post(stream, "/pair-verify", 0, &m1_verify.encode()).await;
+        assert!(resp.contains("200"), "pair-verify M1");
+
+        // M1: pair-setup (transient)
+        let mut m1 = TlvValues::new();
+        m1.add(TlvType::State as u8, &[1]);
+        m1.add(TlvType::Method as u8, &[0]);
+        m1.add(TlvType::Flags as u8, &[0x10]);
+        let (resp, body) = rtsp_post(stream, "/pair-setup", 1, &m1.encode()).await;
+        assert!(resp.contains("200"), "M2 response");
+        let m2 = TlvValues::decode(&body).expect("M2 TLV");
+        assert_eq!(m2.get_type(TlvType::State), Some(&[2u8][..]));
+        let salt = m2.get_type(TlvType::Salt).unwrap();
+        let pk_b_bytes = m2.get_type(TlvType::PublicKey).unwrap();
+
+        // Client SRP: compute A and M1 proof
+        let n_hex = "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF";
+        let n = BigUint::parse_bytes(n_hex.as_bytes(), 16).unwrap();
+        let g = BigUint::from(5u32);
+        let mut a_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut a_bytes);
+        let a = BigUint::from_bytes_be(&a_bytes);
+        let big_a = g.modpow(&a, &n);
+
+        let salt_bn = BigUint::from_bytes_be(salt);
+        let big_b = BigUint::from_bytes_be(pk_b_bytes);
+
+        // SRP math (simplified — same as pairing_homekit self-test)
+        fn to_bytes_be(n: &BigUint) -> Vec<u8> {
+            let b = n.to_bytes_be();
+            if b.is_empty() { vec![0] } else { b }
+        }
+        fn to_padded(n: &BigUint, len: usize) -> Vec<u8> {
+            let b = n.to_bytes_be();
+            if b.len() >= len {
+                b
+            } else {
+                let mut p = vec![0u8; len - b.len()];
+                p.extend(&b);
+                p
+            }
+        }
+        fn sha512(d: &[u8]) -> [u8; 64] {
+            let mut h = Sha512::new();
+            h.update(d);
+            h.finalize().into()
+        }
+        fn h_nn_pad(n1: &BigUint, n2: &BigUint, l: usize) -> BigUint {
+            let mut b = Vec::new();
+            b.extend(&to_padded(n1, l));
+            b.extend(&to_padded(n2, l));
+            BigUint::from_bytes_be(&sha512(&b))
+        }
+
+        let k = h_nn_pad(&n, &g, 384);
+        let u = h_nn_pad(&big_a, &big_b, 384);
+
+        let mut h = Sha512::new();
+        h.update(b"Pair-Setup");
+        h.update(b":");
+        h.update(b"3939");
+        let ucp = h.finalize();
+        let mut buf2 = Vec::new();
+        buf2.extend(&to_bytes_be(&salt_bn));
+        buf2.extend(&ucp);
+        let x = BigUint::from_bytes_be(&sha512(&buf2));
+
+        let gx = g.modpow(&x, &n);
+        let kgx = (&k * &gx) % &n;
+        let base = (&big_b + &n - &kgx) % &n;
+        let big_s = base.modpow(&(&a + &u * &x), &n);
+        let session_key = sha512(&to_bytes_be(&big_s));
+
+        // Calculate M1 proof
+        let h_n = sha512(&to_bytes_be(&n));
+        let h_g = sha512(&to_bytes_be(&g));
+        let mut h_xor = [0u8; 64];
+        for i in 0..64 {
+            h_xor[i] = h_n[i] ^ h_g[i];
+        }
+        let h_i = sha512(b"Pair-Setup");
+        let mut h = Sha512::new();
+        h.update(h_xor);
+        h.update(h_i);
+        h.update(to_bytes_be(&salt_bn));
+        h.update(to_bytes_be(&big_a));
+        h.update(to_bytes_be(&big_b));
+        h.update(session_key);
+        let client_m: [u8; 64] = h.finalize().into();
+
+        // M3: send A + proof
+        let mut m3 = TlvValues::new();
+        m3.add(TlvType::State as u8, &[3]);
+        m3.add(TlvType::PublicKey as u8, &to_bytes_be(&big_a));
+        m3.add(TlvType::Proof as u8, &client_m);
+        let (resp, body) = rtsp_post(stream, "/pair-setup", 2, &m3.encode()).await;
+        assert!(resp.contains("200"), "M4 response");
+
+        // Verify M4: State=4, Proof present (no error)
+        let m4 = TlvValues::decode(&body).expect("M4 TLV");
+        assert_eq!(m4.get_type(TlvType::State), Some(&[4u8][..]));
+        assert!(m4.get_type(TlvType::Proof).is_some(), "M4 should have server proof");
+        
+        session_key
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn ap2_remote_control_only_setup() {
+        let (mut server, port, _) = start_server().await;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
+
+        // Perform pairing first to populate conn.ap2_shared_secret and get session key
+        let session_key = perform_transient_pairing(&mut stream).await;
+
+        // Derive client-side transport cipher context (swapped write/read relative to server)
+        let mut client_cipher = shairplay::crypto::chacha_transport::EncryptedChannel::new(
+            &session_key,
+            "Control-Salt",
+            "Control-Write-Encryption-Key",
+            "Control-Salt",
+            "Control-Read-Encryption-Key",
+        ).unwrap();
+
+        let mut dict = plist::Dictionary::new();
+        dict.insert("isRemoteControlOnly".into(), plist::Value::Boolean(true));
+        let mut body = Vec::new();
+        plist::to_writer_binary(&mut body, &dict).unwrap();
+
+        let req_header = format!(
+            "SETUP rtsp://127.0.0.1/{} RTSP/1.0\r\nCSeq: 3\r\nContent-Type: application/x-apple-binary-plist\r\nContent-Length: {}\r\n\r\n",
+            port,
+            body.len()
+        );
+        let mut plaintext = req_header.into_bytes();
+        plaintext.extend_from_slice(&body);
+
+        let encrypted_req = client_cipher.encrypt_ctx.encrypt(&plaintext).unwrap();
+        stream.write_all(&encrypted_req).await.unwrap();
+
+        // Read and decrypt the response from the server
+        let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).await.unwrap();
+        let (decrypted_resp, _) = client_cipher.decrypt_ctx.decrypt(&buf[..n]).unwrap();
+        let resp = String::from_utf8_lossy(&decrypted_resp).to_string();
+        assert!(resp.contains("200 OK"), "SETUP should be 200, got: {resp}");
+
+        let header_end = resp.find("\r\n\r\n").unwrap() + 4;
+        let body_bytes = &decrypted_resp[header_end..];
+        let cursor = std::io::Cursor::new(body_bytes);
+        let plist_val = plist::Value::from_reader(cursor).expect("SETUP body should be plist");
+        let resp_dict = plist_val.as_dictionary().expect("should be dictionary");
+
+        assert!(resp_dict.contains_key("eventPort"), "should contain eventPort");
+        let event_port = resp_dict.get("eventPort").unwrap().as_unsigned_integer().unwrap();
+        assert!(event_port > 0, "eventPort should be valid");
+
+        // Verify we can connect to that event port!
+        let event_stream = TcpStream::connect(format!("127.0.0.1:{event_port}")).await;
+        assert!(event_stream.is_ok(), "should be able to connect to eventPort");
+
+        server.stop().await;
+    }
 }
 
 #[tokio::test]
