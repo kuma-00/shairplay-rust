@@ -216,6 +216,14 @@ cargo test --features ap2     # AP1 + AP2 tests
 cargo test --features video   # All tests
 ```
 
+## Development
+
+```sh
+git config core.hooksPath .githooks
+```
+
+This enables pre-commit (auto-format) and pre-push (fmt check + clippy + audit) hooks.
+
 ## Acknowledgments
 
 This project builds on the work of many contributors to the AirPlay open-source ecosystem:
