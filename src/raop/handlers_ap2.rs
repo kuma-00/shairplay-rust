@@ -468,7 +468,7 @@ pub(crate) fn handle_setup(
                     } else {
                         // iOS 18+ with HomeKit pairing does not send ekey.
                         // The video key derivation for this case is unsolved.
-                        // See VIDEO-RESEARCH.md for details.
+                        // See AP2-STATUS.md for the current research status.
                         tracing::warn!("Video: no ekey available — iOS 18 HomeKit video decryption unsupported");
                         tracing::warn!("Video stream will connect but frames cannot be decrypted");
                         // Use zeroed key — stream will connect but produce garbage

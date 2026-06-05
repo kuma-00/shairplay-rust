@@ -4,10 +4,9 @@
 //! service. This module discovers that service and sends HTTP commands back to control
 //! playback (play/pause, next, previous, volume, etc.).
 
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
-
-use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -80,8 +79,8 @@ fn discover_dacp_port(dacp_id: &str, _remote_ip: std::net::IpAddr) -> Option<u16
 /// // Then in an async context:
 /// // client.play_pause().await.ok();
 /// ```
-#[derive(Debug)]
 /// HTTP client for sending DACP playback commands to the iPhone.
+#[derive(Debug)]
 pub struct DacpClient {
     /// DACP-ID from the RTSP session. Identifies the `_dacp._tcp` mDNS service.
     dacp_id: String,
@@ -167,10 +166,7 @@ impl DacpClient {
             .ok_or_else(|| NetworkError::Mdns("DACP not discovered yet — call discover() first".into()))?;
 
         let mut stream = TcpStream::connect(addr).await?;
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nActive-Remote: {}\r\nHost: {addr}\r\n\r\n",
-            self.active_remote
-        );
+        let request = self.command_request(path, addr);
         stream.write_all(request.as_bytes()).await?;
 
         // Read response (we don't parse it, just ensure the connection succeeds)
@@ -188,10 +184,7 @@ impl DacpClient {
         let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
         stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nActive-Remote: {}\r\nHost: {addr}\r\n\r\n",
-            self.active_remote
-        );
+        let request = self.command_request(path, addr);
         stream.write_all(request.as_bytes())?;
 
         let mut buf = [0u8; 1024];
@@ -225,5 +218,12 @@ impl DacpClient {
 
     pub(crate) fn set_repeat_blocking(&self, state: u8) -> Result<(), NetworkError> {
         self.command_blocking(&repeat_path(state))
+    }
+
+    fn command_request(&self, path: &str, addr: SocketAddr) -> String {
+        format!(
+            "GET {path} HTTP/1.1\r\nActive-Remote: {}\r\nHost: {addr}\r\n\r\n",
+            self.active_remote
+        )
     }
 }

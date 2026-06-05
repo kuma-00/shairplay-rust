@@ -1,7 +1,6 @@
 //! HTTP/RTSP request and response parsing.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use crate::error::ProtocolError;
 
@@ -205,8 +204,7 @@ impl HttpResponse {
     /// Equivalent to http_response_finish.
     pub fn finish(&mut self, body: Option<&[u8]>) {
         if let Some(body) = body.filter(|b| !b.is_empty()) {
-            let mut len_str = String::new();
-            write!(len_str, "{}", body.len()).unwrap();
+            let len_str = body.len().to_string();
             self.data.extend_from_slice(b"Content-Length: ");
             self.data.extend_from_slice(len_str.as_bytes());
             self.data.extend_from_slice(b"\r\n\r\n");

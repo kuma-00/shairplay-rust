@@ -86,8 +86,8 @@ checked in as Rust constants and are covered by test vectors.
 
 ### Previous Research — Needs Re-verification
 
-The following conclusions from VIDEO-RESEARCH.md were made with the broken
-`playfair_decrypt` and may no longer be accurate:
+Earlier video-key research was conducted with the broken `playfair_decrypt`
+implementation and may no longer be accurate:
 
 - "iOS 18 doesn't send ekey for screen mirroring" — **WRONG.** It does, with
   UxPlay features (`0x527FFEE6`).

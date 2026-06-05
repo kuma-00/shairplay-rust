@@ -146,8 +146,7 @@ buffered audio is not available — the iPhone falls back to legacy ALAC
 NTP timing.
 
 Video decryption is implemented for the legacy feature-set path; AP2+video
-hybrid operation remains research work. See
-[AP2-STATUS.md](AP2-STATUS.md) and [VIDEO-RESEARCH.md](VIDEO-RESEARCH.md)
+hybrid operation remains research work. See [AP2-STATUS.md](AP2-STATUS.md)
 for details.
 
 ### 🔬 Remote Control
@@ -160,7 +159,7 @@ Third-party AP2 receivers cannot send playback commands (play/pause/skip) to the
 - **Companion-link protocol** — requires same Apple ID
 - **DACP** — iPhone doesn't send Active-Remote header in AP2
 
- See [AP2-STATUS.md](AP2-STATUS.md) for the full research. If you have further insights or want to help investigate, please reach out!
+See [AP2-STATUS.md](AP2-STATUS.md) for the full research. If you have further insights or want to help investigate, please reach out!
 
 ## Example Player
 
