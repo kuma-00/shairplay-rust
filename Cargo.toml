@@ -55,7 +55,7 @@ hex = "0.4"
 astro-dnssd = "0.3"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-mdns-sd = "0.19"
+mdns-sd = "0.20"
 gethostname = "1"
 
 [features]
