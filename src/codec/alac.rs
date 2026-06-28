@@ -138,6 +138,55 @@ struct RiceParams {
     k_modifier_mask: u32,
 }
 
+/// Per-channel predictor header parsed from a compressed ALAC subframe.
+struct PredictorHeader {
+    pred_quant: u32,
+    ricemod: u32,
+    pred_num: usize,
+    pred_table: [i16; 32],
+}
+
+/// Parse the leading subframe header shared by mono and stereo elements.
+/// Updates `output_samples`/`output_size` when an explicit frame size is present
+/// and returns `(uncompressed_bytes, is_not_compressed)`.
+fn parse_subframe_header(
+    reader: &mut BitReader,
+    output_samples: &mut usize,
+    output_size: &mut usize,
+    bytes_per_sample: usize,
+) -> (u32, u32) {
+    reader.readbits(4);
+    reader.readbits(12);
+    let has_size = reader.readbits(1);
+    let uncompressed_bytes = reader.readbits(2);
+    let is_not_compressed = reader.readbits(1);
+
+    if has_size != 0 {
+        *output_samples = reader.readbits(32) as usize;
+        *output_size = *output_samples * bytes_per_sample;
+    }
+
+    (uncompressed_bytes, is_not_compressed)
+}
+
+/// Read one channel's predictor header (type/quant/rice-modifier/coefficients).
+fn read_predictor_header(reader: &mut BitReader) -> PredictorHeader {
+    let _pred_type = reader.readbits(4);
+    let pred_quant = reader.readbits(4);
+    let ricemod = reader.readbits(3);
+    let pred_num = reader.readbits(5) as usize;
+    let mut pred_table = [0i16; 32];
+    pred_table[..pred_num]
+        .iter_mut()
+        .for_each(|v| *v = reader.readbits(16) as i16);
+    PredictorHeader {
+        pred_quant,
+        ricemod,
+        pred_num,
+        pred_table,
+    }
+}
+
 fn entropy_rice_decode(
     reader: &mut BitReader,
     output: &mut [i32],
@@ -460,6 +509,40 @@ impl AlacDecoder {
         )
     }
 
+    /// Rice-decode then FIR-predict one channel into the A (`false`) or B
+    /// (`true`) buffers. Shared by the mono (one call) and stereo (two calls) paths.
+    fn decode_channel(
+        &mut self,
+        reader: &mut BitReader,
+        channel_b: bool,
+        output_samples: usize,
+        readsamplesize: u32,
+        hdr: &PredictorHeader,
+    ) {
+        let rice = RiceParams {
+            initial_history: self.rice_initial_history as u32,
+            k_modifier: self.rice_k_modifier as u32,
+            history_mult: hdr.ricemod * self.rice_history_mult as u32 / 4,
+            k_modifier_mask: (1 << self.rice_k_modifier) - 1,
+        };
+        let (prederr, out) = if channel_b {
+            (&mut self.predicterror_buffer_b, &mut self.outputsamples_buffer_b)
+        } else {
+            (&mut self.predicterror_buffer_a, &mut self.outputsamples_buffer_a)
+        };
+        entropy_rice_decode(reader, prederr, output_samples, readsamplesize, &rice);
+        let mut pred_table = hdr.pred_table;
+        predictor_decompress_fir_adapt(
+            &prederr.clone(),
+            out,
+            output_samples,
+            readsamplesize,
+            &mut pred_table,
+            hdr.pred_num,
+            hdr.pred_quant as i32,
+        );
+    }
+
     fn decode_mono(
         &mut self,
         reader: &mut BitReader,
@@ -467,31 +550,16 @@ impl AlacDecoder {
         output_samples: &mut usize,
         output_size: &mut usize,
     ) {
-        reader.readbits(4);
-        reader.readbits(12);
-        let has_size = reader.readbits(1);
-        let uncompressed_bytes = reader.readbits(2);
-        let is_not_compressed = reader.readbits(1);
-
-        if has_size != 0 {
-            *output_samples = reader.readbits(32) as usize;
-            *output_size = *output_samples * self.bytes_per_sample as usize;
-        }
+        let (uncompressed_bytes, is_not_compressed) =
+            parse_subframe_header(reader, output_samples, output_size, self.bytes_per_sample as usize);
 
         let readsamplesize = self.sample_size_config as u32 - uncompressed_bytes * 8;
 
         if is_not_compressed == 0 {
-            let mut predictor_coef_table = [0i16; 32];
+            // Unused interlacing shift/leftweight (always present in the stream).
             reader.readbits(8);
             reader.readbits(8);
-            let _prediction_type = reader.readbits(4);
-            let prediction_quantitization = reader.readbits(4);
-            let ricemodifier = reader.readbits(3);
-            let predictor_coef_num = reader.readbits(5) as usize;
-
-            predictor_coef_table[..predictor_coef_num]
-                .iter_mut()
-                .for_each(|v| *v = reader.readbits(16) as i16);
+            let hdr = read_predictor_header(reader);
 
             if uncompressed_bytes > 0 {
                 self.uncompressed_bytes_buffer_a[..*output_samples]
@@ -499,28 +567,7 @@ impl AlacDecoder {
                     .for_each(|v| *v = reader.readbits(uncompressed_bytes * 8) as i32);
             }
 
-            entropy_rice_decode(
-                reader,
-                &mut self.predicterror_buffer_a,
-                *output_samples,
-                readsamplesize,
-                &RiceParams {
-                    initial_history: self.rice_initial_history as u32,
-                    k_modifier: self.rice_k_modifier as u32,
-                    history_mult: ricemodifier * self.rice_history_mult as u32 / 4,
-                    k_modifier_mask: (1 << self.rice_k_modifier) - 1,
-                },
-            );
-
-            predictor_decompress_fir_adapt(
-                &self.predicterror_buffer_a.clone(),
-                &mut self.outputsamples_buffer_a,
-                *output_samples,
-                readsamplesize,
-                &mut predictor_coef_table,
-                predictor_coef_num,
-                prediction_quantitization as i32,
-            );
+            self.decode_channel(reader, false, *output_samples, readsamplesize, &hdr);
         } else {
             if self.sample_size_config <= 16 {
                 for i in 0..*output_samples {
@@ -570,16 +617,8 @@ impl AlacDecoder {
         output_samples: &mut usize,
         output_size: &mut usize,
     ) {
-        reader.readbits(4);
-        reader.readbits(12);
-        let has_size = reader.readbits(1);
-        let uncompressed_bytes = reader.readbits(2);
-        let is_not_compressed = reader.readbits(1);
-
-        if has_size != 0 {
-            *output_samples = reader.readbits(32) as usize;
-            *output_size = *output_samples * self.bytes_per_sample as usize;
-        }
+        let (uncompressed_bytes, is_not_compressed) =
+            parse_subframe_header(reader, output_samples, output_size, self.bytes_per_sample as usize);
 
         let readsamplesize = self.sample_size_config as u32 - uncompressed_bytes * 8 + 1;
         let mut interlacing_shift = 0u8;
@@ -589,25 +628,9 @@ impl AlacDecoder {
             interlacing_shift = reader.readbits(8) as u8;
             interlacing_leftweight = reader.readbits(8) as u8;
 
-            // Channel A
-            let _pred_type_a = reader.readbits(4);
-            let pred_quant_a = reader.readbits(4);
-            let ricemod_a = reader.readbits(3);
-            let pred_num_a = reader.readbits(5) as usize;
-            let mut pred_table_a = [0i16; 32];
-            pred_table_a[..pred_num_a]
-                .iter_mut()
-                .for_each(|v| *v = reader.readbits(16) as i16);
-
-            // Channel B
-            let _pred_type_b = reader.readbits(4);
-            let pred_quant_b = reader.readbits(4);
-            let ricemod_b = reader.readbits(3);
-            let pred_num_b = reader.readbits(5) as usize;
-            let mut pred_table_b = [0i16; 32];
-            pred_table_b[..pred_num_b]
-                .iter_mut()
-                .for_each(|v| *v = reader.readbits(16) as i16);
+            // Both predictor headers are read before either channel is decoded.
+            let hdr_a = read_predictor_header(reader);
+            let hdr_b = read_predictor_header(reader);
 
             if uncompressed_bytes > 0 {
                 for i in 0..*output_samples {
@@ -616,51 +639,8 @@ impl AlacDecoder {
                 }
             }
 
-            // Decode channel A
-            entropy_rice_decode(
-                reader,
-                &mut self.predicterror_buffer_a,
-                *output_samples,
-                readsamplesize,
-                &RiceParams {
-                    initial_history: self.rice_initial_history as u32,
-                    k_modifier: self.rice_k_modifier as u32,
-                    history_mult: ricemod_a * self.rice_history_mult as u32 / 4,
-                    k_modifier_mask: (1 << self.rice_k_modifier) - 1,
-                },
-            );
-            predictor_decompress_fir_adapt(
-                &self.predicterror_buffer_a.clone(),
-                &mut self.outputsamples_buffer_a,
-                *output_samples,
-                readsamplesize,
-                &mut pred_table_a,
-                pred_num_a,
-                pred_quant_a as i32,
-            );
-
-            // Decode channel B
-            entropy_rice_decode(
-                reader,
-                &mut self.predicterror_buffer_b,
-                *output_samples,
-                readsamplesize,
-                &RiceParams {
-                    initial_history: self.rice_initial_history as u32,
-                    k_modifier: self.rice_k_modifier as u32,
-                    history_mult: ricemod_b * self.rice_history_mult as u32 / 4,
-                    k_modifier_mask: (1 << self.rice_k_modifier) - 1,
-                },
-            );
-            predictor_decompress_fir_adapt(
-                &self.predicterror_buffer_b.clone(),
-                &mut self.outputsamples_buffer_b,
-                *output_samples,
-                readsamplesize,
-                &mut pred_table_b,
-                pred_num_b,
-                pred_quant_b as i32,
-            );
+            self.decode_channel(reader, false, *output_samples, readsamplesize, &hdr_a);
+            self.decode_channel(reader, true, *output_samples, readsamplesize, &hdr_b);
         } else {
             if self.sample_size_config <= 16 {
                 for i in 0..*output_samples {
@@ -711,5 +691,102 @@ impl AlacDecoder {
             ),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// Minimal MSB-first bit writer for building ALAC subframes in tests.
+    struct BitWriter {
+        bytes: Vec<u8>,
+        nbits: usize,
+    }
+    impl BitWriter {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                nbits: 0,
+            }
+        }
+        fn put(&mut self, val: u32, bits: u32) {
+            for i in (0..bits).rev() {
+                if self.nbits.is_multiple_of(8) {
+                    self.bytes.push(0);
+                }
+                if (val >> i) & 1 == 1 {
+                    let last = self.bytes.len() - 1;
+                    self.bytes[last] |= 1 << (7 - (self.nbits % 8));
+                }
+                self.nbits += 1;
+            }
+        }
+    }
+
+    /// ALACSpecificConfig with 16-bit samples and the given max frame length.
+    fn config_16(max_frames: u32) -> [u8; 48] {
+        let mut c = [0u8; 48];
+        c[24..28].copy_from_slice(&max_frames.to_be_bytes());
+        c[29] = 16; // sample_size_config
+        c
+    }
+
+    // An uncompressed ALAC subframe just sign-extends and packs the raw samples,
+    // so the decoded PCM must equal the input samples — a true correctness check
+    // of the shared subframe-header parse + dispatch + output paths.
+
+    #[test]
+    fn decode_uncompressed_mono_roundtrips_samples() {
+        let mut dec = AlacDecoder::new(16, 1);
+        dec.set_info(&config_16(4));
+
+        let samples: [u16; 4] = [0x0102, 0x7FFF, 0x8000, 0xFFFF];
+        let mut w = BitWriter::new();
+        w.put(0, 3); // channels = 0 (mono)
+        w.put(0, 4);
+        w.put(0, 12);
+        w.put(0, 1); // has_size = 0 → output_samples = max_frames
+        w.put(0, 2); // uncompressed_bytes = 0
+        w.put(1, 1); // is_not_compressed = 1
+        for &s in &samples {
+            w.put(s as u32, 16);
+        }
+
+        let mut out = [0u8; 64];
+        let n = dec.decode_frame(&w.bytes, &mut out);
+        assert_eq!(n, 8);
+        let expected: Vec<u8> = samples.iter().flat_map(|&s| (s as i16).to_le_bytes()).collect();
+        assert_eq!(&out[..8], &expected[..]);
+    }
+
+    #[test]
+    fn decode_uncompressed_stereo_roundtrips_samples() {
+        let mut dec = AlacDecoder::new(16, 2);
+        dec.set_info(&config_16(4));
+
+        let l: [u16; 4] = [0x0102, 0x7FFF, 0x8000, 0xFFFF];
+        let r: [u16; 4] = [0x1111, 0x2222, 0x3333, 0x4444];
+        let mut w = BitWriter::new();
+        w.put(1, 3); // channels = 1 (stereo)
+        w.put(0, 4);
+        w.put(0, 12);
+        w.put(0, 1); // has_size = 0
+        w.put(0, 2); // uncompressed_bytes = 0
+        w.put(1, 1); // is_not_compressed = 1
+        for i in 0..4 {
+            w.put(l[i] as u32, 16);
+            w.put(r[i] as u32, 16);
+        }
+
+        let mut out = [0u8; 64];
+        let n = dec.decode_frame(&w.bytes, &mut out);
+        assert_eq!(n, 16);
+        let mut expected = Vec::new();
+        for i in 0..4 {
+            expected.extend_from_slice(&(l[i] as i16).to_le_bytes());
+            expected.extend_from_slice(&(r[i] as i16).to_le_bytes());
+        }
+        assert_eq!(&out[..16], &expected[..]);
     }
 }
