@@ -97,6 +97,13 @@ impl FairPlay {
         if request[4] != 0x03 {
             return Err(CryptoError::FairPlay("unsupported version".into()));
         }
+        // The `mode` byte (offset 12) later selects a key/IV table in
+        // `decrypt_message`; both tables have `MESSAGE_KEY.len()` (== 4) entries,
+        // so reject an out-of-range mode here before storing the key message.
+        // Mirrors the M1 mode check in `setup`.
+        if request[12] as usize >= MESSAGE_KEY.len() {
+            return Err(CryptoError::FairPlay("invalid mode".into()));
+        }
         self.keymsg.copy_from_slice(request);
         self.keymsglen = 164;
         let mut res = [0u8; 32];
@@ -799,6 +806,23 @@ mod playfair_tests {
         decrypt_message(&msg, &mut dec);
         assert_eq!(to_hex(&dec[..16]), "efbf616443ab486b700a3f743df20ddd");
         assert_eq!(to_hex(&dec[112..128]), "71853546f2ef515d63e27a37c510de09");
+    }
+
+    #[test]
+    fn handshake_rejects_out_of_range_mode() {
+        // The M2 `mode` byte (offset 12) selects a length-4 key/IV table in
+        // decrypt_message; an out-of-range value must be rejected at handshake
+        // time rather than panicking later when the AES key is decrypted.
+        let mut msg = [0x41u8; 164];
+        msg[4] = 0x03;
+
+        let mut fp = FairPlay::new();
+        msg[12] = 0x01; // valid mode
+        assert!(fp.handshake(&msg).is_ok());
+
+        let mut fp = FairPlay::new();
+        msg[12] = 0xff; // out-of-range mode
+        assert!(fp.handshake(&msg).is_err());
     }
 
     #[test]

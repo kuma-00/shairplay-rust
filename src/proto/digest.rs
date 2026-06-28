@@ -2,6 +2,7 @@
 
 use md5::{Digest, Md5};
 use rand::Rng;
+use subtle::ConstantTimeEq;
 
 fn md5_to_hex(hash: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
@@ -105,7 +106,8 @@ pub fn is_valid(
     }
 
     let our_response = get_response(username, realm, password, nonce, method, uri);
-    response == our_response
+    // Constant-time comparison to avoid leaking the expected digest via timing.
+    response.as_bytes().ct_eq(our_response.as_bytes()).into()
 }
 
 /// Extract a quoted value from a "key=\"value\"" pair.
