@@ -69,7 +69,10 @@ pub trait AudioHandler: Send + Sync + 'static {
     fn on_client_connected(&self, _addr: &str) {}
     /// Called when a client disconnects.
     fn on_client_disconnected(&self, _addr: &str) {}
-    /// Called on runtime errors. Default: log at warn level.
+    /// Called when the library hits a runtime error on a connection — e.g. a
+    /// pairing/pair-verify failure, a FairPlay or session-key decrypt failure, a
+    /// rejected stream format, or an audio-decoder init failure. Fired at most
+    /// once per failure (never per audio packet). Default: log at warn level.
     fn on_error(&self, error: &crate::error::ShairplayError) {
         tracing::warn!(%error, "AirPlay error");
     }
