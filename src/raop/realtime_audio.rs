@@ -7,15 +7,13 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
 
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead, aead::Payload};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 
+use crate::raop::audio_pipeline::{NONCE_TRAIL_LEN, RTP_HEADER_LEN, decrypt_rtp_chacha};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
 
 #[cfg(feature = "resample")]
 use crate::codec::resample::StreamResampler;
-
-const RTP_HEADER_LEN: usize = 12;
-const NONCE_TRAIL_LEN: usize = 8;
 
 /// Output configuration for resampling/mixdown.
 pub struct OutputConfig {
@@ -78,19 +76,10 @@ pub async fn run(socket: UdpSocket, shk: [u8; 32], handler: Arc<dyn AudioHandler
             session = Some(handler.audio_init(format));
         }
 
-        // Decrypt: nonce from trailing 8 bytes, AAD from RTP header bytes 4..12
-        let pkt_len = packet.len();
-        let mut nonce = [0u8; 12];
-        nonce[4..12].copy_from_slice(&packet[pkt_len - NONCE_TRAIL_LEN..]);
-        let aad = &packet[4..12];
-        let ciphertext = &packet[RTP_HEADER_LEN..pkt_len - NONCE_TRAIL_LEN];
-
-        let alac_data = match cipher.decrypt(Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad }) {
-            Ok(p) => p,
-            Err(_) => {
-                debug!("Realtime audio decrypt failed");
-                continue;
-            }
+        // Decrypt the ChaCha20-Poly1305 RTP frame.
+        let Some(alac_data) = decrypt_rtp_chacha(&cipher, packet) else {
+            debug!("Realtime audio decrypt failed");
+            continue;
         };
 
         // Decode ALAC → f32 PCM
@@ -98,16 +87,10 @@ pub async fn run(socket: UdpSocket, shk: [u8; 32], handler: Arc<dyn AudioHandler
             continue;
         };
 
-        // Mixdown if needed
+        // Mix down + resample to the output format.
         #[cfg(feature = "resample")]
-        if src_ch > out_ch {
-            samples = crate::codec::resample::mixdown(&samples, src_ch as usize, out_ch as usize);
-        }
-
-        // Resample if needed
-        #[cfg(feature = "resample")]
-        if let Some(ref mut rs) = resampler {
-            samples = rs.process(&samples);
+        {
+            samples = crate::codec::resample::mixdown_and_resample(samples, src_ch, out_ch, &mut resampler);
         }
 
         // Deliver immediately (realtime = no playout buffer)

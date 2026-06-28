@@ -79,8 +79,10 @@ impl<'a> BitReader<'a> {
 
     fn unreadbits(&mut self, bits: u32) {
         let total = (self.pos as i64 * 8) + self.bit as i64 - bits as i64;
+        debug_assert!(total >= 0, "unreadbits underflow");
         self.pos = (total / 8) as usize;
-        self.bit = (total % 8).unsigned_abs() as u32;
+        // rem_euclid keeps the bit offset in 0..8 even if `total` were negative.
+        self.bit = total.rem_euclid(8) as u32;
     }
 }
 
@@ -387,6 +389,12 @@ impl AlacDecoder {
 
     /// Initialize the decoder with a 48-byte ALACSpecificConfig block.
     pub fn set_info(&mut self, config: &[u8]) {
+        // The ALACSpecificConfig fields live in config[24..48]; ignore anything
+        // shorter rather than panic on out-of-bounds indexing (the RTSP caller
+        // always passes a fixed 48-byte block, but this keeps the API safe).
+        if config.len() < 48 {
+            return;
+        }
         let mut p = 24; // skip: size(4) + frma(4) + alac(4) + size(4) + alac(4) + 0(4)
         self.max_samples_per_frame = u32::from_be_bytes([config[p], config[p + 1], config[p + 2], config[p + 3]]);
         p += 4;
