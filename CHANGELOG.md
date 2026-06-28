@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.5.0...shairplay-v0.6.0) (2026-06-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **error:** ProtocolError::DigestAuth, CodecError::AlacDecode, and CodecError::AacDecode are removed (never constructed by the library). The `dacp` module is hidden from documentation; it remains accessible but unsupported.
+* **error:** ServerError::{NotStarted, AlreadyRunning, AudioHandler} are removed. They were never constructed by the library, so only a downstream `match` that explicitly named these arms is affected.
+* **crypto:** the advertised accessory public key (pk) is now a real secret instead of being derived from the public device id, so already-paired Apple devices must pair once more after upgrade. Wire a persistent PairingStore to keep the identity stable across restarts.
+
+### Features
+
+* **raop:** surface AAC decoder-init failure via on_error ([c5363a8](https://github.com/metaneutrons/shairplay-rust/commit/c5363a8af5cf2a961d8a33f40fd2c9d1b2bdcb97))
+* **raop:** wire AudioHandler::on_error to surface failures to apps ([3d3055d](https://github.com/metaneutrons/shairplay-rust/commit/3d3055d7bc3abdd65efc614862278e27e6f55647))
+
+
+### Bug Fixes
+
+* **crypto:** secure AP2 identity key, close remote-panic and timing holes ([5f16e95](https://github.com/metaneutrons/shairplay-rust/commit/5f16e951e03c7f2b2fbddc47e0cd0639c0172ba7))
+
+
+### Code Refactoring
+
+* **error:** prune dead error variants, hide internal dacp module ([865f854](https://github.com/metaneutrons/shairplay-rust/commit/865f8549470329d500b616917e86e22596a52220))
+* **error:** remove never-constructed ServerError variants ([6ca097a](https://github.com/metaneutrons/shairplay-rust/commit/6ca097a13a1ced066001302f258bcc7d989f23a1))
+
 ## [0.5.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.4.0...shairplay-v0.5.0) (2026-05-23)
 
 
