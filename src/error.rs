@@ -29,14 +29,6 @@ pub enum ShairplayError {
 /// Errors from the AirPlay server and session handling.
 #[derive(Debug, Error)]
 pub enum ServerError {
-    /// Server has not been started yet.
-    #[error("server not started")]
-    NotStarted,
-
-    /// Server is already running.
-    #[error("server already running")]
-    AlreadyRunning,
-
     /// Maximum number of concurrent clients reached.
     #[error("max clients reached ({0})")]
     MaxClients(usize),
@@ -48,10 +40,6 @@ pub enum ServerError {
     /// Password has invalid length.
     #[error("invalid password length: {0}")]
     InvalidPassword(usize),
-
-    /// Audio handler returned an error.
-    #[error("audio handler error: {0}")]
-    AudioHandler(String),
 }
 
 /// Errors from cryptographic operations (RSA, pairing, FairPlay, AES).
