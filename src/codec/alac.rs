@@ -789,4 +789,108 @@ mod decode_tests {
         }
         assert_eq!(&out[..16], &expected[..]);
     }
+
+    // --- Golden vectors: real Apple-encoded (afconvert) *compressed* ALAC ---
+    //
+    // The uncompressed tests above exercise the verbatim path. These vectors are
+    // produced by macOS `afconvert` (Apple's reference ALAC encoder) and contain
+    // genuinely compressed frames (rice + FIR prediction). ALAC is lossless, so
+    // the decoder must reproduce the encoder's input PCM bit-for-bit — the
+    // committed PCM *is* the oracle. Regenerate with tests/data/alac/gen_alac.py.
+    //
+    // afconvert pads the final packet to a full frame (mRemainderFrames), so the
+    // decoded stream is >= the valid PCM; we trim to the valid length to compare.
+
+    struct Golden {
+        sample_rate: u32,
+        channels: u8,
+        cookie: Vec<u8>,
+        frames: Vec<Vec<u8>>,
+        pcm: Vec<u8>,
+    }
+
+    fn rd_u32(d: &[u8], p: &mut usize) -> u32 {
+        let v = u32::from_le_bytes(d[*p..*p + 4].try_into().unwrap());
+        *p += 4;
+        v
+    }
+
+    fn parse_golden(d: &[u8]) -> Golden {
+        assert_eq!(&d[..8], b"ALACGV01", "bad fixture magic");
+        let mut p = 8;
+        let sample_rate = rd_u32(d, &mut p);
+        let channels = d[p];
+        p += 4; // channels(1) + bit_depth(1) + reserved(2)
+        let clen = rd_u32(d, &mut p) as usize;
+        let cookie = d[p..p + clen].to_vec();
+        p += clen;
+        let nframes = rd_u32(d, &mut p) as usize;
+        let mut frames = Vec::with_capacity(nframes);
+        for _ in 0..nframes {
+            let flen = rd_u32(d, &mut p) as usize;
+            frames.push(d[p..p + flen].to_vec());
+            p += flen;
+        }
+        let plen = rd_u32(d, &mut p) as usize;
+        let pcm = d[p..p + plen].to_vec();
+        p += plen;
+        assert_eq!(p, d.len(), "trailing bytes in fixture");
+        Golden {
+            sample_rate,
+            channels,
+            cookie,
+            frames,
+            pcm,
+        }
+    }
+
+    fn check_golden(raw: &[u8]) {
+        let g = parse_golden(raw);
+        assert_eq!(g.cookie.len(), 48, "cookie must be the 48-byte set_info block");
+
+        let mut dec = AlacDecoder::new(16, g.channels as i32);
+        dec.set_info(&g.cookie);
+        assert_eq!(dec.sample_rate, g.sample_rate, "set_info parsed sample rate");
+        assert!(dec.max_samples_per_frame > 0, "set_info parsed frame length");
+
+        let frame_bytes = dec.max_samples_per_frame as usize * dec.bytes_per_sample as usize;
+        let mut out = vec![0u8; frame_bytes];
+        let mut got = Vec::with_capacity(g.pcm.len());
+        let mut compressed = 0;
+        for frame in &g.frames {
+            let n = dec.decode_frame(frame, &mut out);
+            assert!(n > 0, "frame decoded to zero bytes");
+            got.extend_from_slice(&out[..n]);
+            // A verbatim full frame would be ~frame_bytes; compressed frames are
+            // materially smaller (the whole point of these vectors).
+            if frame.len() < frame_bytes {
+                compressed += 1;
+            }
+        }
+        assert!(
+            got.len() >= g.pcm.len(),
+            "decoded {} bytes, fewer than the {} valid PCM bytes",
+            got.len(),
+            g.pcm.len()
+        );
+        got.truncate(g.pcm.len()); // drop encoder padding in the final packet
+        assert!(
+            got == g.pcm,
+            "decoded PCM does not match the Apple-encoded golden vector"
+        );
+        assert!(
+            compressed > 0,
+            "no compressed frames present — vector would not exercise rice/FIR"
+        );
+    }
+
+    #[test]
+    fn golden_stereo_compressed_matches_apple_encoder() {
+        check_golden(include_bytes!("../../tests/data/alac/stereo.alac"));
+    }
+
+    #[test]
+    fn golden_mono_compressed_matches_apple_encoder() {
+        check_golden(include_bytes!("../../tests/data/alac/mono.alac"));
+    }
 }
