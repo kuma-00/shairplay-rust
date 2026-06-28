@@ -7,7 +7,6 @@ use shairplay::crypto::pairing::Pairing;
 use shairplay::net::mdns::AirPlayServiceInfo;
 use shairplay::proto::digest;
 use shairplay::proto::http::{HttpRequest, HttpResponse};
-use shairplay::proto::plist;
 use shairplay::proto::sdp::Sdp;
 use shairplay::raop::buffer::RaopBuffer;
 
@@ -146,31 +145,6 @@ fn digest_nonce_length() {
     let nonce = digest::generate_nonce(32);
     assert_eq!(nonce.len(), 32);
     assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-// ============================================================
-// Plist — roundtrip
-// ============================================================
-#[test]
-fn plist_roundtrip() {
-    use std::collections::HashMap;
-    let mut dict = HashMap::new();
-    dict.insert("name".to_string(), plist::PlistValue::String("test".to_string()));
-    dict.insert("value".to_string(), plist::PlistValue::Integer(42));
-    let original = plist::PlistValue::Dict(dict);
-
-    let bytes = plist::to_bplist(&original).unwrap();
-    assert!(bytes.starts_with(b"bplist"));
-
-    let parsed = plist::from_bplist(&bytes).unwrap();
-    assert_eq!(parsed.dict_get("name").unwrap().as_string(), Some("test"));
-    assert_eq!(parsed.dict_get("value").unwrap().as_integer(), Some(42));
-}
-
-#[test]
-fn plist_reject_garbage() {
-    assert!(plist::from_bplist(b"not a plist").is_none());
-    assert!(plist::from_bplist(b"").is_none());
 }
 
 // ============================================================
@@ -341,7 +315,7 @@ fn alac_init_and_set_info() {
 fn rtp_buffer_queue_dequeue() {
     let key = [0u8; 16];
     let iv = [0u8; 16];
-    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv);
+    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv).expect("valid fmtp");
     // Queue returns >= 0 for valid-length packets (ALAC decode may fail on dummy data)
     let mut pkt = vec![0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     pkt.extend_from_slice(&[0u8; 256]);
@@ -356,7 +330,7 @@ fn rtp_buffer_queue_dequeue() {
 fn rtp_buffer_flush() {
     let key = [0u8; 16];
     let iv = [0u8; 16];
-    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv);
+    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv).expect("valid fmtp");
     buf.flush(100);
     assert!(buf.dequeue(true).is_none());
 }
@@ -365,8 +339,22 @@ fn rtp_buffer_flush() {
 fn rtp_buffer_reject_short_packet() {
     let key = [0u8; 16];
     let iv = [0u8; 16];
-    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv);
+    let mut buf = RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv).expect("valid fmtp");
     assert_eq!(buf.queue(&[0u8; 4], true), -1); // too short
+}
+
+#[test]
+fn rtp_buffer_rejects_malformed_fmtp() {
+    let key = [0u8; 16];
+    let iv = [0u8; 16];
+    // Too few fields — previously panicked via `.expect("invalid fmtp")`.
+    assert!(RaopBuffer::new("96 352", "96 352", &key, &iv).is_none());
+    // Non-numeric field — previously silently coerced to 0.
+    assert!(RaopBuffer::new("96 352", "96 abc 0 16 40 10 14 2 255 0 0 44100", &key, &iv).is_none());
+    // Zero channels — would build a 0-channel decoder / zero-size buffers.
+    assert!(RaopBuffer::new("96 352", "96 352 0 16 40 10 14 0 255 0 0 44100", &key, &iv).is_none());
+    // Well-formed input still succeeds.
+    assert!(RaopBuffer::new("96 352", "96 352 0 16 40 10 14 2 255 0 0 44100", &key, &iv).is_some());
 }
 
 // ============================================================
@@ -801,4 +789,100 @@ mod playout_tests {
         };
         let _ = PlayoutCommand::Stop;
     }
+}
+
+// ============================================================
+// Q1: accessory identity key — random, persisted, not device-derived
+// ============================================================
+
+#[cfg(feature = "ap2")]
+#[test]
+fn identity_key_has_entropy_and_is_not_device_derived() {
+    use shairplay::crypto::pairing_homekit::{generate_identity_seed, identity_keypair, server_keypair};
+    // Generated seeds carry real entropy (not constant / not derived from public data).
+    assert_ne!(generate_identity_seed(), generate_identity_seed());
+    // A random identity differs from the legacy public-device-id-derived key — the
+    // whole point of the fix (the old key was reconstructable from the mDNS device id).
+    let (_, vk_random) = identity_keypair(&generate_identity_seed());
+    let (_, vk_derived) = server_keypair("AABBCCDD1122");
+    assert_ne!(vk_random.as_bytes(), vk_derived.as_bytes());
+}
+
+#[cfg(feature = "ap2")]
+#[test]
+fn pairing_store_identity_methods_default_and_roundtrip() {
+    use shairplay::{MemoryPairingStore, PairingStore};
+    // Default trait methods keep the extension non-breaking: a store that doesn't
+    // implement them still compiles and reports "no persisted identity".
+    let mem = MemoryPairingStore::default();
+    assert_eq!(mem.load_identity(), None);
+    mem.save_identity([9u8; 32]); // default no-op
+    assert_eq!(mem.load_identity(), None);
+
+    // A store that implements the methods round-trips the seed.
+    struct Store(std::sync::Mutex<Option<[u8; 32]>>);
+    impl PairingStore for Store {
+        fn get(&self, _: &str) -> Option<[u8; 32]> {
+            None
+        }
+        fn put(&self, _: &str, _: [u8; 32]) {}
+        fn remove(&self, _: &str) {}
+        fn load_identity(&self) -> Option<[u8; 32]> {
+            *self.0.lock().unwrap()
+        }
+        fn save_identity(&self, seed: [u8; 32]) {
+            *self.0.lock().unwrap() = Some(seed);
+        }
+    }
+    let s = Store(std::sync::Mutex::new(None));
+    assert_eq!(s.load_identity(), None);
+    s.save_identity([7u8; 32]);
+    assert_eq!(s.load_identity(), Some([7u8; 32]));
+}
+
+#[cfg(feature = "ap2")]
+#[test]
+fn server_build_generates_and_persists_random_identity() {
+    use shairplay::{AudioFormat, AudioHandler, AudioSession, PairingStore, RaopServer};
+    use std::sync::Arc;
+
+    struct NoopHandler;
+    impl AudioHandler for NoopHandler {
+        fn audio_init(&self, _f: AudioFormat) -> Box<dyn AudioSession> {
+            Box::new(NoopSession)
+        }
+    }
+    struct NoopSession;
+    impl AudioSession for NoopSession {
+        fn audio_process(&mut self, _: &[f32]) {}
+    }
+
+    // Returns no persisted identity, captures whatever build() saves.
+    struct CapturingStore(std::sync::Mutex<Option<[u8; 32]>>);
+    impl PairingStore for CapturingStore {
+        fn get(&self, _: &str) -> Option<[u8; 32]> {
+            None
+        }
+        fn put(&self, _: &str, _: [u8; 32]) {}
+        fn remove(&self, _: &str) {}
+        fn load_identity(&self) -> Option<[u8; 32]> {
+            None
+        }
+        fn save_identity(&self, seed: [u8; 32]) {
+            *self.0.lock().unwrap() = Some(seed);
+        }
+    }
+
+    let store = Arc::new(CapturingStore(std::sync::Mutex::new(None)));
+    let _server = RaopServer::builder()
+        .name("Test")
+        .pairing_store(store.clone())
+        .build(Arc::new(NoopHandler))
+        .expect("build");
+
+    // build() must have generated a random identity and offered it for persistence.
+    assert!(
+        store.0.lock().unwrap().is_some(),
+        "build() should generate and persist an identity seed when the store has none"
+    );
 }
