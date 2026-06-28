@@ -42,6 +42,9 @@ async fn write_bad_request_and_close(stream: &mut TcpStream, handler: Option<&mu
 /// // Bind to a specific port
 /// let config = BindConfig::new().port(7000);
 /// ```
+/// Default RTSP listening port for AirPlay receivers.
+pub const DEFAULT_RTSP_PORT: u16 = 5000;
+
 #[derive(Debug, Clone)]
 pub struct BindConfig {
     /// IP addresses to bind to. Empty = bind to all interfaces (0.0.0.0 + \[::\]).
@@ -56,7 +59,7 @@ impl Default for BindConfig {
     fn default() -> Self {
         Self {
             bind_addrs: Vec::new(),
-            port: 5000,
+            port: DEFAULT_RTSP_PORT,
             auto_port: true,
         }
     }
@@ -90,7 +93,10 @@ impl BindConfig {
 /// Callback trait for HTTP/RTSP connection lifecycle. Equivalent to httpd_callbacks_t.
 pub trait HttpdCallbacks: Send + Sync + 'static {
     /// Called when a new TCP connection is accepted. Return a handler or None to reject.
-    fn conn_init(&self, local: SocketAddr, remote: SocketAddr) -> Option<Box<dyn ConnectionHandler>>;
+    ///
+    /// Takes `Arc<Self>` so the implementation can hand each connection a cheap
+    /// shared handle to server-wide state instead of deep-copying it per connection.
+    fn conn_init(self: Arc<Self>, local: SocketAddr, remote: SocketAddr) -> Option<Box<dyn ConnectionHandler>>;
 }
 
 /// Per-connection request handler. Equivalent to conn_request + conn_destroy.
@@ -185,8 +191,9 @@ impl HttpServer {
         let semaphore = Arc::new(Semaphore::new(self.max_connections));
 
         for listener in listeners {
-            let addr = listener.local_addr().unwrap();
-            tracing::debug!(%addr, "Listener bound");
+            if let Ok(addr) = listener.local_addr() {
+                tracing::debug!(%addr, "Listener bound");
+            }
             spawn_accept_loop(listener, callbacks.clone(), semaphore.clone(), shutdown_rx.clone());
         }
 
