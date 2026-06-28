@@ -10,6 +10,7 @@ pub(crate) fn handle_server_info(
     response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
     let mac = conn
+        .shared
         .hwaddr
         .iter()
         .map(|b| format!("{b:02X}"))
@@ -56,7 +57,7 @@ pub(crate) fn handle_play(
 
     tracing::info!(%url, start_pos, "HLS play request");
 
-    let hls_handler = conn.hls_handler.as_ref()?;
+    let hls_handler = conn.shared.hls_handler.as_ref()?;
     let session = hls_handler.on_play(url, start_pos);
 
     if let Ok(mut state) = conn.hls_state.lock() {

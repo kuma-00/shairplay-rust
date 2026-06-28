@@ -22,6 +22,9 @@ pub(crate) struct RaopShared {
     pub(crate) handler: Arc<dyn AudioHandler>,
     #[cfg(feature = "ap2")]
     pub(crate) pairing_store: Arc<dyn PairingStore>,
+    /// Accessory's long-term Ed25519 identity seed (random, persisted via the store).
+    #[cfg(feature = "ap2")]
+    pub(crate) identity_seed: [u8; 32],
     pub(crate) output_sample_rate: Option<u32>,
     pub(crate) output_max_channels: Option<u8>,
     #[cfg(feature = "ap2")]
@@ -35,6 +38,9 @@ pub(crate) struct RaopShared {
     pub(crate) video_eiv: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
     #[cfg(feature = "ap2")]
     pub(crate) pairing_id: String,
+    /// Accessory device id (`hwaddr_airplay(hwaddr)`), computed once at build.
+    #[cfg(feature = "ap2")]
+    pub(crate) device_id: String,
     #[cfg(feature = "ap2")]
     pub(crate) airplay_name: String,
     #[cfg(feature = "hls")]
@@ -42,7 +48,7 @@ pub(crate) struct RaopShared {
 }
 
 impl HttpdCallbacks for RaopShared {
-    fn conn_init(&self, local: SocketAddr, remote: SocketAddr) -> Option<Box<dyn ConnectionHandler>> {
+    fn conn_init(self: Arc<Self>, local: SocketAddr, remote: SocketAddr) -> Option<Box<dyn ConnectionHandler>> {
         let local_bytes = match local.ip() {
             std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
             std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
@@ -60,17 +66,6 @@ impl HttpdCallbacks for RaopShared {
             remote_addr: remote_bytes,
             remote_socket: remote,
             nonce: digest::generate_nonce(MAX_NONCE_LEN),
-            rsakey: self.rsakey.clone(),
-            pairing_identity: self.pairing.clone(),
-            hwaddr: self.hwaddr.clone(),
-            password: self.password.clone(),
-            handler: self.handler.clone(),
-            #[cfg(feature = "ap2")]
-            device_id: crate::util::hwaddr_airplay(&self.hwaddr),
-            #[cfg(feature = "ap2")]
-            pairing_id: self.pairing_id.clone(),
-            #[cfg(feature = "ap2")]
-            airplay_name: self.airplay_name.clone(),
             #[cfg(feature = "ap2")]
             srp_server: None,
             #[cfg(feature = "ap2")]
@@ -82,32 +77,19 @@ impl HttpdCallbacks for RaopShared {
             #[cfg(feature = "ap2")]
             is_ap2: false,
             #[cfg(feature = "ap2")]
-            pairing_store: self.pairing_store.clone(),
-            #[cfg(feature = "ap2")]
             playout_cmd: None,
-            output_sample_rate: self.output_sample_rate,
-            output_max_channels: self.output_max_channels,
-            #[cfg(feature = "ap2")]
-            pin: self.pin.clone(),
             #[cfg(feature = "ap2")]
             event_sender: None,
-            #[cfg(feature = "video")]
-            video_handler: self.video_handler.clone(),
             #[cfg(feature = "video")]
             ekey: None,
             #[cfg(feature = "video")]
             eiv: None,
-            #[cfg(feature = "video")]
-            shared_video_ekey: self.video_ekey.clone(),
-            #[cfg(feature = "video")]
-            shared_video_eiv: self.video_eiv.clone(),
-            #[cfg(feature = "hls")]
-            hls_handler: self.hls_handler.clone(),
             #[cfg(feature = "hls")]
             hls_state: crate::raop::hls::HlsState::new(),
+            shared: self.clone(),
         };
         let remote_str = remote.ip().to_string();
-        conn.handler.on_client_connected(&remote_str);
+        conn.shared.handler.on_client_connected(&remote_str);
         Some(Box::new(RaopConnectionHandler {
             conn,
             remote_addr: remote_str,
@@ -130,7 +112,7 @@ struct RaopConnectionHandler {
 
 impl Drop for RaopConnectionHandler {
     fn drop(&mut self) {
-        self.conn.handler.on_client_disconnected(&self.remote_addr);
+        self.conn.shared.handler.on_client_disconnected(&self.remote_addr);
     }
 }
 
@@ -187,7 +169,14 @@ impl ConnectionHandler for RaopConnectionHandler {
     fn encrypt_outgoing(&mut self, data: &[u8]) -> Vec<u8> {
         #[cfg(feature = "ap2")]
         if let Some(ch) = &mut self.cipher {
-            return ch.encrypt_ctx.encrypt(data).unwrap_or_else(|_| data.to_vec());
+            // Once the channel is encrypted the peer expects ciphertext; never
+            // fall back to emitting plaintext (which would leak the response and
+            // desync the stream). On the practically-impossible AEAD encrypt
+            // failure, return no bytes so the connection tears down instead.
+            return ch.encrypt_ctx.encrypt(data).unwrap_or_else(|e| {
+                tracing::warn!("Outgoing encryption failed; dropping response: {e}");
+                Vec::new()
+            });
         }
         data.to_vec()
     }

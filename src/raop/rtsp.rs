@@ -7,6 +7,9 @@
 use crate::proto::digest;
 use crate::proto::http::{HttpRequest, HttpResponse};
 use crate::raop::handlers_ap1::{self as handlers, RaopConnection};
+
+/// HTTP Digest authentication realm advertised and validated for RTSP auth.
+const DIGEST_REALM: &str = "airplay";
 #[cfg(feature = "ap2")]
 use crate::raop::handlers_ap2;
 #[cfg(feature = "hls")]
@@ -185,10 +188,17 @@ pub(crate) fn dispatch(conn: &mut RaopConnection, request: &HttpRequest) -> Http
     response.add_header("Apple-Jack-Status", "connected; type=analog");
 
     // --- Middleware: authentication ---
-    if method != "OPTIONS" && !conn.password.is_empty() {
+    if method != "OPTIONS" && !conn.shared.password.is_empty() {
         let authorization = request.header("Authorization");
-        if !digest::is_valid("airplay", &conn.password, &conn.nonce, method, url, authorization) {
-            let auth_str = format!("Digest realm=\"airplay\", nonce=\"{}\"", conn.nonce);
+        if !digest::is_valid(
+            DIGEST_REALM,
+            &conn.shared.password,
+            &conn.nonce,
+            method,
+            url,
+            authorization,
+        ) {
+            let auth_str = format!("Digest realm=\"{}\", nonce=\"{}\"", DIGEST_REALM, conn.nonce);
             response = HttpResponse::new("RTSP/1.0", 401, "Unauthorized");
             response.add_header("CSeq", cseq);
             response.add_header("WWW-Authenticate", &auth_str);
@@ -199,7 +209,10 @@ pub(crate) fn dispatch(conn: &mut RaopConnection, request: &HttpRequest) -> Http
 
     // --- Middleware: Apple-Challenge ---
     if let Some(challenge) = request.header("Apple-Challenge")
-        && let Ok(sig) = conn.rsakey.sign_challenge(challenge, &conn.local_addr, &conn.hwaddr)
+        && let Ok(sig) = conn
+            .shared
+            .rsakey
+            .sign_challenge(challenge, &conn.local_addr, &conn.shared.hwaddr)
     {
         response.add_header("Apple-Response", &sig);
     }

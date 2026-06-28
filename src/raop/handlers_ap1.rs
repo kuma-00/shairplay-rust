@@ -3,11 +3,9 @@
 use std::sync::Arc;
 
 use crate::crypto::fairplay::FairPlay;
-use crate::crypto::pairing::{Pairing, PairingSession};
-use crate::crypto::rsa::RsaKey;
+use crate::crypto::pairing::PairingSession;
 use crate::proto::http::{HttpRequest, HttpResponse};
 use crate::proto::sdp::Sdp;
-use crate::raop::AudioHandler;
 use crate::raop::rtp::RaopRtp;
 
 #[cfg(feature = "ap2")]
@@ -23,19 +21,10 @@ pub(crate) struct RaopConnection {
     pub remote_addr: Vec<u8>,
     pub remote_socket: std::net::SocketAddr,
     pub nonce: String,
-    // Shared references from the server
-    pub rsakey: Arc<RsaKey>,
-    pub pairing_identity: Arc<Pairing>,
-    pub hwaddr: Vec<u8>,
-    pub password: String,
-    pub handler: Arc<dyn AudioHandler>,
+    /// Cheap shared handle to server-wide config (identity, keys, handler, settings).
+    /// Replaces the ~17 fields that were previously deep-copied into every connection.
+    pub shared: Arc<crate::raop::connection::RaopShared>,
     // AirPlay 2 state
-    #[cfg(feature = "ap2")]
-    pub device_id: String,
-    #[cfg(feature = "ap2")]
-    pub pairing_id: String,
-    #[cfg(feature = "ap2")]
-    pub airplay_name: String,
     #[cfg(feature = "ap2")]
     pub srp_server: Option<SrpServer>,
     #[cfg(feature = "ap2")]
@@ -48,31 +37,13 @@ pub(crate) struct RaopConnection {
     #[cfg(feature = "ap2")]
     pub is_ap2: bool,
     #[cfg(feature = "ap2")]
-    #[allow(dead_code)] // read in AP2 pair-setup M5 handler
-    pub pairing_store: Arc<dyn crate::raop::PairingStore>,
-    #[cfg(feature = "ap2")]
     pub playout_cmd: Option<tokio::sync::mpsc::UnboundedSender<crate::raop::buffered_audio::PlayoutCommand>>,
-    #[allow(dead_code)] // read when resample or ap2 feature enabled
-    pub output_sample_rate: Option<u32>,
-    #[allow(dead_code)] // read when ap2 feature enabled
-    pub output_max_channels: Option<u8>,
-    #[cfg(feature = "ap2")]
-    pub pin: Option<String>,
     #[cfg(feature = "ap2")]
     pub event_sender: Option<crate::raop::event_channel::EventSender>,
-    #[cfg(feature = "video")]
-    pub video_handler: Option<Arc<dyn crate::raop::video::VideoHandler>>,
     #[cfg(feature = "video")]
     pub ekey: Option<[u8; 16]>,
     #[cfg(feature = "video")]
     pub eiv: Option<[u8; 16]>,
-    /// Shared video encryption keys (set by audio connection, read by video connection).
-    #[cfg(feature = "video")]
-    pub shared_video_ekey: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
-    #[cfg(feature = "video")]
-    pub shared_video_eiv: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
-    #[cfg(feature = "hls")]
-    pub hls_handler: Option<Arc<dyn crate::raop::hls::HlsHandler>>,
     #[cfg(feature = "hls")]
     pub hls_state: std::sync::Arc<std::sync::Mutex<crate::raop::hls::HlsState>>,
 }
@@ -116,7 +87,7 @@ pub(crate) fn handle_pair_setup(
     if data.len() != 32 {
         return None;
     }
-    let public_key = conn.pairing_identity.public_key();
+    let public_key = conn.shared.pairing.public_key();
     response.add_header("Content-Type", "application/octet-stream");
     Some(public_key.to_vec())
 }
@@ -224,9 +195,9 @@ pub(crate) fn handle_announce(
 
     // Decrypt AES key from RSA or FairPlay
     let key_bytes = if let Some(rsa_key_str) = sdp.rsaaeskey() {
-        conn.rsakey.decrypt(rsa_key_str).ok()
+        conn.shared.rsakey.decrypt(rsa_key_str).ok()
     } else if let Some(fp_key_str) = sdp.fpaeskey() {
-        let fp_data = conn.rsakey.decode(fp_key_str).ok()?;
+        let fp_data = conn.shared.rsakey.decode(fp_key_str).ok()?;
         if fp_data.len() == 72 {
             let input: &[u8; 72] = fp_data.as_slice().try_into().ok()?;
             let key = conn.fairplay.decrypt(input).ok()?;
@@ -243,7 +214,7 @@ pub(crate) fn handle_announce(
         aeskey.copy_from_slice(&key_bytes[..16]);
     }
 
-    let iv_bytes = conn.rsakey.decode(aesiv_str).ok()?;
+    let iv_bytes = conn.shared.rsakey.decode(aesiv_str).ok()?;
     if iv_bytes.len() >= 16 {
         aesiv.copy_from_slice(&iv_bytes[..16]);
     }
@@ -251,8 +222,8 @@ pub(crate) fn handle_announce(
     // Destroy existing RTP session if any
     conn.raop_rtp = None;
 
-    conn.raop_rtp = Some(RaopRtp::new(
-        conn.handler.clone(),
+    conn.raop_rtp = RaopRtp::new(
+        conn.shared.handler.clone(),
         crate::raop::rtp::RtpConfig {
             remote: remote.to_string(),
             local_addr: local_ip_from(conn),
@@ -260,10 +231,10 @@ pub(crate) fn handle_announce(
             fmtp: fmtp.to_string(),
             aes_key: aeskey,
             aes_iv: aesiv,
-            output_sample_rate: conn.output_sample_rate,
+            output_sample_rate: conn.shared.output_sample_rate,
             remote_socket: conn.remote_socket,
         },
-    ));
+    );
 
     if conn.raop_rtp.is_none() {
         response.set_disconnect(true);
@@ -284,7 +255,7 @@ pub(crate) fn handle_setup(
     if let (Some(dacp_id), Some(active_remote)) = (request.header("DACP-ID"), request.header("Active-Remote")) {
         let addr_bytes = crate::raop::rtp::remote_addr_bytes(&conn.remote_socket.ip().to_string());
         let remote = std::sync::Arc::new(crate::raop::DacpRemoteControl::new(dacp_id, active_remote, &addr_bytes));
-        conn.handler.on_remote_control(remote);
+        conn.shared.handler.on_remote_control(remote);
     }
 
     let use_udp = !transport.starts_with("RTP/AVP/TCP");
@@ -349,64 +320,32 @@ pub(crate) fn handle_set_parameter(
     let data = request.data()?;
     tracing::debug!(content_type, len = data.len(), "SET_PARAMETER");
 
-    // AP2: forward via playout command channel
-    // AP2: metadata goes directly to AudioHandler (never blocks audio).
-    // Only volume and flush go through the playout command channel
-    // because they affect the audio pipeline.
-    #[cfg(feature = "ap2")]
-    if conn.playout_cmd.is_some() {
-        match content_type {
-            "text/parameters" => {
-                let text = std::str::from_utf8(data).ok()?;
-                if let Some(rest) = text.strip_prefix("volume: ") {
-                    if let Ok(vol) = rest.trim().parse::<f32>() {
-                        conn.handler.on_volume(vol);
-                    }
-                } else if let Some(rest) = text.strip_prefix("progress: ") {
-                    let p: Vec<&str> = rest.trim().split('/').collect();
-                    if p.len() == 3 {
-                        conn.handler.on_progress(
-                            p[0].parse().unwrap_or(0),
-                            p[1].parse().unwrap_or(0),
-                            p[2].parse().unwrap_or(0),
-                        );
-                    }
-                }
-            }
-            "image/jpeg" | "image/png" => conn.handler.on_coverart(data),
-            "application/x-dmap-tagged" => {
-                let meta = crate::proto::dmap::TrackMetadata::from_dmap(data);
-                conn.handler.on_metadata(&meta);
-            }
-            _ => {}
-        }
-        return None;
-    }
-
-    // AP1: deliver metadata directly via AudioHandler (never blocks audio)
+    // Volume, progress, cover art, and DMAP metadata are delivered straight to the
+    // AudioHandler (never blocking the audio pipeline). This dispatch is identical
+    // for AP1 and AP2 — only audio-pipeline commands (rate/flush) differ, and those
+    // arrive on their own RTSP methods, not here.
     match content_type {
         "text/parameters" => {
             let text = std::str::from_utf8(data).ok()?;
             if let Some(rest) = text.strip_prefix("volume: ") {
                 if let Ok(vol) = rest.trim().parse::<f32>() {
-                    conn.handler.on_volume(vol);
+                    conn.shared.handler.on_volume(vol);
                 }
             } else if let Some(rest) = text.strip_prefix("progress: ") {
                 let parts: Vec<&str> = rest.trim().split('/').collect();
                 if parts.len() == 3 {
-                    let s = parts[0].parse().unwrap_or(0);
-                    let c = parts[1].parse().unwrap_or(0);
-                    let e = parts[2].parse().unwrap_or(0);
-                    conn.handler.on_progress(s, c, e);
+                    conn.shared.handler.on_progress(
+                        parts[0].parse().unwrap_or(0),
+                        parts[1].parse().unwrap_or(0),
+                        parts[2].parse().unwrap_or(0),
+                    );
                 }
             }
         }
-        "image/jpeg" | "image/png" => {
-            conn.handler.on_coverart(data);
-        }
+        "image/jpeg" | "image/png" => conn.shared.handler.on_coverart(data),
         "application/x-dmap-tagged" => {
             let meta = crate::proto::dmap::TrackMetadata::from_dmap(data);
-            conn.handler.on_metadata(&meta);
+            conn.shared.handler.on_metadata(&meta);
         }
         _ => {}
     }

@@ -56,20 +56,28 @@ fn parse_fmtp(fmtp: &str) -> Option<AlacConfig> {
     if vals.len() < 12 {
         return None;
     }
-    let p = |i: usize| vals[i].parse::<u32>().unwrap_or(0);
-    Some(AlacConfig {
-        frame_length: p(1),
-        compatible_version: p(2) as u8,
-        bit_depth: p(3) as u8,
-        pb: p(4) as u8,
-        mb: p(5) as u8,
-        kb: p(6) as u8,
-        num_channels: p(7) as u8,
-        max_run: p(8) as u16,
-        max_frame_bytes: p(9),
-        avg_bit_rate: p(10),
-        sample_rate: p(11),
-    })
+    // Every field must be a valid integer — a non-numeric field is malformed
+    // input and must be rejected, not silently coerced to 0 (a 0 here yields a
+    // zero-size audio buffer and a 0-channel decoder downstream).
+    let p = |i: usize| vals[i].parse::<u32>().ok();
+    let config = AlacConfig {
+        frame_length: p(1)?,
+        compatible_version: p(2)? as u8,
+        bit_depth: p(3)? as u8,
+        pb: p(4)? as u8,
+        mb: p(5)? as u8,
+        kb: p(6)? as u8,
+        num_channels: p(7)? as u8,
+        max_run: p(8)? as u16,
+        max_frame_bytes: p(9)?,
+        avg_bit_rate: p(10)?,
+        sample_rate: p(11)?,
+    };
+    // Reject configs that would produce degenerate buffers / decoder state.
+    if config.frame_length == 0 || config.num_channels == 0 || config.bit_depth == 0 || config.sample_rate == 0 {
+        return None;
+    }
+    Some(config)
 }
 
 /// Build the 48-byte decoder info block expected by `AlacDecoder::set_info`.
@@ -121,8 +129,15 @@ impl RaopBuffer {
     ///
     /// `fmtp` is parsed to determine ALAC frame size, channel count, and sample rate.
     /// The ALAC decoder is initialized immediately.
-    pub fn new(_rtpmap: &str, fmtp: &str, aes_key: &[u8; RAOP_AESKEY_LEN], aes_iv: &[u8; RAOP_AESIV_LEN]) -> Self {
-        let config = parse_fmtp(fmtp).expect("invalid fmtp");
+    ///
+    /// Returns `None` if the (peer-supplied) `fmtp` attribute is malformed.
+    pub fn new(
+        _rtpmap: &str,
+        fmtp: &str,
+        aes_key: &[u8; RAOP_AESKEY_LEN],
+        aes_iv: &[u8; RAOP_AESIV_LEN],
+    ) -> Option<Self> {
+        let config = parse_fmtp(fmtp)?;
         // ALAC outputs S16LE; we convert to F32 (one f32 per sample).
         let s16_buffer_size =
             config.frame_length as usize * config.num_channels as usize * config.bit_depth as usize / 8;
@@ -145,7 +160,7 @@ impl RaopBuffer {
             })
             .collect();
 
-        Self {
+        Some(Self {
             aeskey: *aes_key,
             aesiv: *aes_iv,
             alac_config: config,
@@ -155,7 +170,7 @@ impl RaopBuffer {
             last_seqnum: 0,
             entries,
             audio_buffer_size,
-        }
+        })
     }
 
     /// Returns the ALAC configuration parsed from the SDP fmtp attribute.
