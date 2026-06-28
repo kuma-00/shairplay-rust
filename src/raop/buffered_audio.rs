@@ -16,7 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 use crate::codec::aac::{AacDecoder, AudioSsrc};
-use crate::error::{NetworkError, ShairplayError};
+use crate::error::{CodecError, NetworkError, ShairplayError};
 use crate::raop::audio_pipeline::{NONCE_TRAIL_LEN, RTP_HEADER_LEN, decrypt_rtp_chacha};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
 use crate::util::now_ns;
@@ -191,7 +191,7 @@ impl BufferedAudioProcessor {
                 }
             };
             info!(%addr, "Buffered audio client connected");
-            receive_loop(stream, &shk, output_config, state4).await;
+            receive_loop(stream, &shk, output_config, state4, &handler).await;
         });
 
         cmd_tx
@@ -204,6 +204,7 @@ async fn receive_loop(
     shk: &[u8; 32],
     output_config: OutputConfig,
     state: Arc<(Mutex<PlayoutState>, Condvar)>,
+    handler: &Arc<dyn AudioHandler>,
 ) {
     use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 
@@ -246,6 +247,9 @@ async fn receive_loop(
             decoder = AacDecoder::new(src_sr, src_ch).ok();
             if decoder.is_none() {
                 warn!("Failed to create AAC decoder for {:?}", ssrc);
+                handler.on_error(&ShairplayError::Codec(CodecError::UnsupportedFormat(format!(
+                    "AAC decoder init failed (ssrc={ssrc:?}, sample_rate={src_sr}, channels={src_ch})"
+                ))));
             }
 
             let target_sr = output_config.sample_rate.unwrap_or(src_sr);
