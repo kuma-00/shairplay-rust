@@ -16,7 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 use crate::codec::aac::{AacDecoder, AudioSsrc};
-use crate::error::NetworkError;
+use crate::error::{NetworkError, ShairplayError};
 use crate::raop::audio_pipeline::{NONCE_TRAIL_LEN, RTP_HEADER_LEN, decrypt_rtp_chacha};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
 use crate::util::now_ns;
@@ -186,6 +186,7 @@ impl BufferedAudioProcessor {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("Buffered audio accept failed: {e}");
+                    handler.on_error(&ShairplayError::Network(NetworkError::Io(e)));
                     return;
                 }
             };

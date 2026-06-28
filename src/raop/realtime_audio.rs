@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 
+use crate::error::{NetworkError, ShairplayError};
 use crate::raop::audio_pipeline::{NONCE_TRAIL_LEN, RTP_HEADER_LEN, decrypt_rtp_chacha};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
 
@@ -44,6 +45,7 @@ pub async fn run(socket: UdpSocket, shk: [u8; 32], handler: Arc<dyn AudioHandler
             Ok(n) => n,
             Err(e) => {
                 warn!("Realtime audio recv error: {e}");
+                handler.on_error(&ShairplayError::Network(NetworkError::Io(e)));
                 break;
             }
         };

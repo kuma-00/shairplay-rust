@@ -1,6 +1,9 @@
 //! AP2 RTSP request handlers — pairing, encrypted SETUP, buffered audio, video.
 
 use crate::crypto::pairing_homekit::{PairVerifyServer, SrpServer};
+#[cfg(feature = "video")]
+use crate::error::CryptoError;
+use crate::error::{ProtocolError, ShairplayError};
 use crate::proto::http::{HttpRequest, HttpResponse};
 #[cfg(feature = "video")]
 use crate::raop::rtp::RaopRtp;
@@ -89,6 +92,7 @@ pub(crate) fn handle_pair_setup(
                 }
                 Err(e) => {
                     tracing::warn!("pair-setup M5 failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
                     let mut tlv = crate::crypto::tlv::TlvValues::new();
                     tlv.add(6, &[6]); // State=6
                     tlv.add(7, &[2]); // Error=Authentication
@@ -137,6 +141,7 @@ pub(crate) fn handle_pair_verify(
                 }
                 Err(e) => {
                     tracing::warn!("pair-verify M1 failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
                     None
                 }
             }
@@ -154,6 +159,7 @@ pub(crate) fn handle_pair_verify(
                 }
                 Err(e) => {
                     tracing::warn!("pair-verify M3 failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
                     None
                 }
             }
@@ -375,6 +381,7 @@ fn setup_initial(conn: &mut RaopConnection, dict: &plist::Dictionary) -> Option<
                 }
                 Err(e) => {
                     tracing::warn!("FairPlay decrypt failed: {e:?}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
                 }
             }
         }
@@ -577,6 +584,11 @@ fn setup_stream_realtime(
         #[cfg(not(feature = "video"))]
         {
             tracing::warn!("Type 96 without shk — requires video feature");
+            conn.shared
+                .handler
+                .on_error(&ShairplayError::Protocol(ProtocolError::InvalidRtsp(
+                    "realtime (type 96) SETUP requires a shared key or the video feature".into(),
+                )));
             return None;
         }
     }
@@ -599,6 +611,12 @@ fn setup_stream_buffered(
     let shk = stream0.get("shk").and_then(|v| v.as_data()).unwrap_or(&[]);
     if shk.len() != 32 {
         tracing::warn!(len = shk.len(), "Invalid shk length");
+        conn.shared
+            .handler
+            .on_error(&ShairplayError::Protocol(ProtocolError::InvalidRtsp(format!(
+                "buffered (type 103) SETUP: invalid shk length {}",
+                shk.len()
+            ))));
         return None;
     }
     let mut shk_arr = [0u8; 32];
@@ -694,10 +712,20 @@ fn setup_stream_video(
             // (see AP2-STATUS.md). Decline the stream rather than installing a zeroed key
             // and feeding the app undecryptable "garbage" NAL units.
             tracing::warn!("Video: no ekey available — iOS 18 HomeKit video decryption unsupported; declining stream");
+            conn.shared
+                .handler
+                .on_error(&ShairplayError::Crypto(CryptoError::FairPlay(
+                    "video stream key derivation: no ekey (iOS 18 HomeKit unsupported)".into(),
+                )));
             return None;
         }
     } else {
         tracing::warn!("Video stream: no encryption keys available");
+        conn.shared
+            .handler
+            .on_error(&ShairplayError::Crypto(CryptoError::FairPlay(
+                "video stream key derivation: no encryption keys available".into(),
+            )));
         return None;
     };
 

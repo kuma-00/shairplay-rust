@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::crypto::fairplay::FairPlay;
 use crate::crypto::pairing::PairingSession;
+use crate::error::{CodecError, ShairplayError};
 use crate::proto::http::{HttpRequest, HttpResponse};
 use crate::proto::sdp::Sdp;
 use crate::raop::rtp::RaopRtp;
@@ -124,7 +125,9 @@ pub(crate) fn handle_pair_verify(
                 return None;
             }
             let sig: &[u8; 64] = data[4..68].try_into().ok()?;
-            if conn.pairing.finish(sig).is_err() {
+            if let Err(e) = conn.pairing.finish(sig) {
+                tracing::warn!("AP1 pair-verify finish failed: {e}");
+                conn.shared.handler.on_error(&ShairplayError::Crypto(e));
                 response.set_disconnect(true);
             }
             None
@@ -144,12 +147,26 @@ pub(crate) fn handle_fp_setup(
     match data.len() {
         16 => {
             let req: &[u8; 16] = data.try_into().ok()?;
-            let res = conn.fairplay.setup(req).ok()?;
+            let res = match conn.fairplay.setup(req) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("fp-setup M1 failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
+                    return None;
+                }
+            };
             Some(res.to_vec())
         }
         164 => {
             let req: &[u8; 164] = data.try_into().ok()?;
-            let res = conn.fairplay.handshake(req).ok()?;
+            let res = match conn.fairplay.handshake(req) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("fp-setup M2 failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
+                    return None;
+                }
+            };
             Some(res.to_vec())
         }
         _ => None,
@@ -195,13 +212,26 @@ pub(crate) fn handle_announce(
 
     // Decrypt AES key from RSA or FairPlay
     let key_bytes = if let Some(rsa_key_str) = sdp.rsaaeskey() {
-        conn.shared.rsakey.decrypt(rsa_key_str).ok()
+        match conn.shared.rsakey.decrypt(rsa_key_str) {
+            Ok(k) => Some(k),
+            Err(e) => {
+                tracing::warn!("ANNOUNCE rsaaeskey decrypt failed: {e}");
+                conn.shared.handler.on_error(&ShairplayError::Crypto(e));
+                None
+            }
+        }
     } else if let Some(fp_key_str) = sdp.fpaeskey() {
         let fp_data = conn.shared.rsakey.decode(fp_key_str).ok()?;
         if fp_data.len() == 72 {
             let input: &[u8; 72] = fp_data.as_slice().try_into().ok()?;
-            let key = conn.fairplay.decrypt(input).ok()?;
-            Some(key.to_vec())
+            match conn.fairplay.decrypt(input) {
+                Ok(key) => Some(key.to_vec()),
+                Err(e) => {
+                    tracing::warn!("ANNOUNCE fpaeskey decrypt failed: {e}");
+                    conn.shared.handler.on_error(&ShairplayError::Crypto(e));
+                    None
+                }
+            }
         } else {
             None
         }
@@ -237,6 +267,12 @@ pub(crate) fn handle_announce(
     );
 
     if conn.raop_rtp.is_none() {
+        tracing::warn!(rtpmap, fmtp, "ANNOUNCE: RaopRtp::new failed (malformed fmtp)");
+        conn.shared
+            .handler
+            .on_error(&ShairplayError::Codec(CodecError::UnsupportedFormat(format!(
+                "ANNOUNCE rtpmap={rtpmap} fmtp={fmtp}"
+            ))));
         response.set_disconnect(true);
     }
     None
@@ -273,7 +309,14 @@ pub(crate) fn handle_setup(
     }
 
     if let Some(rtp) = &mut conn.raop_rtp {
-        let (cport, tport, dport) = rtp.start(use_udp, remote_cport, remote_tport).ok()?;
+        let (cport, tport, dport) = match rtp.start(use_udp, remote_cport, remote_tport) {
+            Ok(ports) => ports,
+            Err(e) => {
+                tracing::warn!("AP1 SETUP rtp.start failed: {e}");
+                conn.shared.handler.on_error(&e);
+                return None;
+            }
+        };
 
         let transport_resp = if use_udp {
             format!(
@@ -353,3 +396,111 @@ pub(crate) fn handle_set_parameter(
 }
 
 // --- AirPlay 2 handlers ---
+
+// Verifies that handler-facing error notification (`AudioHandler::on_error`) is
+// actually wired to a representative failure path. Gated to AP1-only builds so the
+// `RaopShared`/`RaopConnection` literals below need only the base (non-AP2) fields.
+#[cfg(all(test, not(feature = "ap2")))]
+mod tests {
+    use super::*;
+    use crate::crypto::pairing::Pairing;
+    use crate::crypto::rsa::RsaKey;
+    use crate::raop::connection::RaopShared;
+    use crate::raop::{AudioFormat, AudioHandler, AudioSession};
+    use std::sync::{Arc, Mutex};
+
+    /// An `AudioHandler` that records every error passed to `on_error`.
+    #[derive(Default)]
+    struct RecordingHandler {
+        errors: Mutex<Vec<String>>,
+    }
+
+    impl AudioHandler for RecordingHandler {
+        fn audio_init(&self, _format: AudioFormat) -> Box<dyn AudioSession> {
+            unreachable!("audio_init is not exercised by the fp-setup error path")
+        }
+        fn on_error(&self, error: &ShairplayError) {
+            self.errors.lock().unwrap().push(error.to_string());
+        }
+    }
+
+    fn test_connection(handler: Arc<RecordingHandler>) -> RaopConnection {
+        let shared = Arc::new(RaopShared {
+            rsakey: Arc::new(RsaKey::from_pem(include_str!("../../airport.key")).unwrap()),
+            pairing: Arc::new(Pairing::generate().unwrap()),
+            hwaddr: vec![0u8; 6],
+            password: String::new(),
+            handler,
+            output_sample_rate: None,
+            output_max_channels: None,
+        });
+        let pairing = shared.pairing.create_session();
+        RaopConnection {
+            raop_rtp: None,
+            fairplay: FairPlay::new(),
+            pairing,
+            local_addr: vec![127, 0, 0, 1],
+            remote_addr: vec![127, 0, 0, 1],
+            remote_socket: "127.0.0.1:5000".parse().unwrap(),
+            nonce: String::new(),
+            shared,
+        }
+    }
+
+    fn fp_setup_request(body: &[u8]) -> HttpRequest {
+        let mut msg = format!(
+            "POST /fp-setup RTSP/1.0\r\nCSeq: 1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        msg.extend_from_slice(body);
+        let mut req = HttpRequest::new();
+        req.add_data(&msg).unwrap();
+        assert_eq!(req.data().map(|d| d.len()), Some(body.len()), "body should parse");
+        req
+    }
+
+    /// A malformed fp-setup M1 (version byte != 0x03) must surface the FairPlay
+    /// `CryptoError` to the application via `on_error`, exactly once.
+    #[test]
+    fn fp_setup_failure_notifies_handler() {
+        let handler = Arc::new(RecordingHandler::default());
+        let mut conn = test_connection(handler.clone());
+
+        // 16-byte M1 with byte[4] = 0x00 (!= 0x03) → FairPlay::setup returns Err.
+        let req = fp_setup_request(&[0u8; 16]);
+        let mut resp = HttpResponse::new("RTSP/1.0", 200, "OK");
+
+        let out = handle_fp_setup(&mut conn, &req, &mut resp);
+
+        assert!(out.is_none(), "malformed fp-setup should decline");
+        let errors = handler.errors.lock().unwrap();
+        assert_eq!(errors.len(), 1, "on_error should fire exactly once: {errors:?}");
+        assert!(
+            errors[0].contains("unsupported version"),
+            "on_error should carry the FairPlay error, got: {:?}",
+            errors[0]
+        );
+    }
+
+    /// A well-formed fp-setup M1 must NOT trigger `on_error`.
+    #[test]
+    fn fp_setup_success_does_not_notify() {
+        let handler = Arc::new(RecordingHandler::default());
+        let mut conn = test_connection(handler.clone());
+
+        // Valid M1: byte[4] = 0x03 (version), byte[14] = 0 (mode).
+        let mut body = [0u8; 16];
+        body[4] = 0x03;
+        let req = fp_setup_request(&body);
+        let mut resp = HttpResponse::new("RTSP/1.0", 200, "OK");
+
+        let out = handle_fp_setup(&mut conn, &req, &mut resp);
+
+        assert!(out.is_some(), "valid fp-setup M1 should produce a reply");
+        assert!(
+            handler.errors.lock().unwrap().is_empty(),
+            "no error expected on success"
+        );
+    }
+}
