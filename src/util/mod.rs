@@ -4,8 +4,9 @@ use std::fmt::Write;
 
 /// Current wall-clock time in nanoseconds since the UNIX epoch.
 ///
-/// Saturates to 0 if the clock is before the epoch. Used by the audio playout
-/// scheduler and PTP/NTP timing code.
+/// Saturates to 0 if the clock is before the epoch. Used by the AP2 audio
+/// playout scheduler and PTP timing code.
+#[cfg(feature = "ap2")]
 pub fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
