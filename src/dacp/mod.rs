@@ -13,6 +13,9 @@ use tokio::net::TcpStream;
 use crate::error::NetworkError;
 use tracing::debug;
 
+/// Default DACP port, used when mDNS discovery of the `_dacp._tcp` service fails.
+const DACP_DEFAULT_PORT: u16 = 3689;
+
 const PLAY_PAUSE_PATH: &str = "/ctrl-int/1/playpause";
 const NEXT_PATH: &str = "/ctrl-int/1/nextitem";
 const PREVIOUS_PATH: &str = "/ctrl-int/1/previtem";
@@ -111,7 +114,7 @@ impl DacpClient {
             }
             None => {
                 debug!(dacp_id = %self.dacp_id, "DACP mDNS discovery failed, falling back to port 3689");
-                Some(SocketAddr::new(remote_ip, 3689))
+                Some(SocketAddr::new(remote_ip, DACP_DEFAULT_PORT))
             }
         };
     }
