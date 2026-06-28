@@ -62,6 +62,7 @@ server.start().await?;
 pub mod codec;
 #[doc(hidden)]
 pub mod crypto;
+#[doc(hidden)]
 pub mod dacp;
 pub mod error;
 #[doc(hidden)]
