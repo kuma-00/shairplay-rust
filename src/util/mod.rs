@@ -1,8 +1,18 @@
-//! Utility functions — hardware address formatting, hex encoding.
-
-pub mod base64;
+//! Utility functions — hardware address formatting, hex encoding, monotonic-ish time.
 
 use std::fmt::Write;
+
+/// Current wall-clock time in nanoseconds since the UNIX epoch.
+///
+/// Saturates to 0 if the clock is before the epoch. Used by the AP2 audio
+/// playout scheduler and PTP timing code.
+#[cfg(feature = "ap2")]
+pub fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
 
 /// Format a hardware address for RAOP service name: "AABBCCDDEEFF" (uppercase hex, no separators).
 /// Equivalent to utils_hwaddr_raop.

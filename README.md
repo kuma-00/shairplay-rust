@@ -34,6 +34,7 @@ A complete AirPlay audio and video receiver as a Rust library. Supports both cla
 | 🌐 | **Cross-platform** | macOS (native Bonjour) + Linux (pure Rust mDNS) |
 | 🔒 | **Pure safe Rust** | `#![forbid(unsafe_code)]`, no C code in this crate¹ |
 | ⚡ | **Async** | Built on [tokio](https://tokio.rs) |
+| 🛎️ | **Error notifications** | Pairing, SETUP, and codec failures surfaced to your app via `AudioHandler::on_error` |
 
 > ¹ The crate itself contains no `unsafe` code. On macOS, mDNS service registration uses [astro-dnssd](https://crates.io/crates/astro-dnssd), which internally calls Apple's Bonjour C API via FFI. On Linux, [mdns-sd](https://crates.io/crates/mdns-sd) provides a pure Rust mDNS implementation with no native dependencies.
 

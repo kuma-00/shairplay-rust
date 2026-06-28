@@ -3,6 +3,8 @@
 //! Accepts a TCP connection, reads 128-byte headers + variable-length payloads,
 //! classifies packets, decrypts Payload types, and delivers to VideoSession.
 
+use std::time::Duration;
+
 use bytes::BytesMut;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -13,6 +15,8 @@ use crate::raop::video::{PacketKind, VideoPacket, VideoSession};
 
 const VIDEO_HEADER_LEN: usize = 128;
 const MAX_VIDEO_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
+/// Drop a video connection whose peer stalls mid-read, freeing the task and port.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run the video stream receiver. Accepts one TCP connection and processes packets.
 pub async fn run(listener: TcpListener, cipher: VideoCipher, session: Box<dyn VideoSession>) {
@@ -32,9 +36,16 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
 
     loop {
         // Read 128-byte header
-        if stream.read_exact(&mut header).await.is_err() {
-            debug!("Video stream ended");
-            break;
+        match tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut header)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => {
+                debug!("Video stream ended");
+                break;
+            }
+            Err(_) => {
+                debug!("Video stream header read timed out");
+                break;
+            }
         }
 
         // Parse header fields (little-endian)
@@ -54,9 +65,16 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
 
         // Read payload
         let mut payload = BytesMut::zeroed(payload_len);
-        if stream.read_exact(&mut payload).await.is_err() {
-            debug!("Video stream ended during payload read");
-            break;
+        match tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut payload)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => {
+                debug!("Video stream ended during payload read");
+                break;
+            }
+            Err(_) => {
+                debug!("Video stream payload read timed out");
+                break;
+            }
         }
 
         // Classify packet

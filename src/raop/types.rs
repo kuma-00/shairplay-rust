@@ -69,7 +69,10 @@ pub trait AudioHandler: Send + Sync + 'static {
     fn on_client_connected(&self, _addr: &str) {}
     /// Called when a client disconnects.
     fn on_client_disconnected(&self, _addr: &str) {}
-    /// Called on runtime errors. Default: log at warn level.
+    /// Called when the library hits a runtime error on a connection — e.g. a
+    /// pairing/pair-verify failure, a FairPlay or session-key decrypt failure, a
+    /// rejected stream format, or an audio-decoder init failure. Fired at most
+    /// once per failure (never per audio packet). Default: log at warn level.
     fn on_error(&self, error: &crate::error::ShairplayError) {
         tracing::warn!(%error, "AirPlay error");
     }
@@ -87,6 +90,27 @@ pub trait PairingStore: Send + Sync + 'static {
     fn put(&self, device_id: &str, public_key: [u8; 32]);
     /// Remove a paired device.
     fn remove(&self, device_id: &str);
+
+    /// Load the accessory's persistent Ed25519 **identity** seed, if one was saved.
+    ///
+    /// This is the server's *own* long-term secret (distinct from the paired peer
+    /// keys handled by [`get`](Self::get)/[`put`](Self::put)). Returning `Some`
+    /// keeps the accessory's identity — and therefore its advertised `pk` — stable
+    /// across restarts so already-paired devices don't need to re-pair.
+    ///
+    /// The default returns `None`: the server then generates a fresh random
+    /// identity on each start and offers it to [`save_identity`](Self::save_identity).
+    /// Implement both methods to persist the identity. (To reproduce the legacy
+    /// insecure behaviour, return the zero-padded device id as the seed.)
+    fn load_identity(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// Persist the accessory's Ed25519 identity seed generated at startup.
+    ///
+    /// The default is a no-op (identity is not persisted). Implement together with
+    /// [`load_identity`](Self::load_identity) to keep a stable identity.
+    fn save_identity(&self, _seed: [u8; 32]) {}
 }
 
 /// In-memory pairing store (lost on restart). Use for testing or wrap with file I/O.

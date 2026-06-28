@@ -1,13 +1,11 @@
 //! FairPlay garble function (inlined from C reference, explicit wrapping arithmetic).
+//!
+//! This is a faithful mechanical port, so a few lints intrinsic to that style are
+//! allowed crate-locally: `non_snake_case` (C register names), `unused_parens`
+//! (explicit C precedence), and `unused_assignments` (registers are zero-init then
+//! assigned). Everything else (clippy::all, unused_mut, unused_variables) is fixed.
 
-#![allow(
-    clippy::all,
-    unused_assignments,
-    non_snake_case,
-    unused_mut,
-    unused_variables,
-    unused_parens
-)]
+#![allow(non_snake_case, unused_parens, unused_assignments)]
 
 fn weird_ror8(input: u8, count: u32) -> u32 {
     if count == 0 {
@@ -47,33 +45,17 @@ pub fn garble(
     buffer3: &mut [u8; 132],
     buffer4: &[u8; 21],
 ) {
+    // Working registers, zero-initialised then assigned in sequence (mirrors the
+    // C reference's top-of-function declarations). The dead zero-stores are why
+    // this module allows `unused_assignments`.
+    #[rustfmt::skip]
     let (mut tmp, mut tmp2, mut tmp3): (u32, u32, u32) = (0, 0, 0);
-    #[allow(non_snake_case)]
-    let (mut A, mut B, mut C, mut D, mut E, mut F, mut G, mut H, mut J, mut K, mut M): (
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-    ) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    #[allow(non_snake_case)]
-    let (mut R, mut S, mut T, mut U, mut V, mut W, mut X, mut Y, mut Z): (
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-        u32,
-    ) = (0, 0, 0, 0, 0, 0, 0, 0, 0);
+    #[rustfmt::skip]
+    let (mut A, mut B, mut C, mut D, mut E, mut F, mut G, mut H, mut J, mut K, mut M):
+        (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    #[rustfmt::skip]
+    let (mut R, mut S, mut T, mut U, mut V, mut W, mut X, mut Y, mut Z):
+        (u32, u32, u32, u32, u32, u32, u32, u32, u32) = (0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     // C: buffer2[12] = 0x14 + (((buffer1[64] & 92) | ((buffer1[99] / 3) & 35)) & buffer4[rol8x(buffer4[(buffer1[206] % 21)],4) % 21]);
     buffer2[12] = (0x14u32.wrapping_add(
@@ -130,13 +112,12 @@ pub fn garble(
 
     // C: buffer1[34] += (buffer4[((buffer2[buffer1[15] % 35] + 0x9e) & 0xff) % 21] / 5);
     buffer1[34] = buffer1[34].wrapping_add(
-        (buffer4[(((buffer2[(buffer1[15] as usize) % 35] as u32).wrapping_add(0x9eu32)) & 0xffu32) as usize % 21] / 5)
-            as u8,
+        (buffer4[(((buffer2[(buffer1[15] as usize) % 35] as u32).wrapping_add(0x9eu32)) & 0xffu32) as usize % 21] / 5),
     );
 
     // C: buffer0[19] += 0xfffffee6 - ((buffer0[buffer3[4] % 20]>>1) & 102);
     buffer0[19] = buffer0[19]
-        .wrapping_add((0xfffffee6u32.wrapping_sub((((buffer0[(buffer3[4] as usize) % 20] as u32) >> 1) & 102))) as u8);
+        .wrapping_add((0xfffffee6u32.wrapping_sub(((buffer0[(buffer3[4] as usize) % 20] as u32) >> 1) & 102)) as u8);
 
     // C: buffer1[15] = (3*(((buffer1[72] >> (buffer4[buffer1[190] % 21] & 7)) ^ (buffer1[72] << ((7 - (buffer4[buffer1[190] % 21]-1)&7)))) - (3*buffer4[buffer1[126] % 21]))) ^ buffer1[15];
     buffer1[15] = (3u32.wrapping_mul(
@@ -179,7 +160,7 @@ pub fn garble(
     );
 
     // C: buffer1[36] += 125;
-    buffer1[36] = buffer1[36].wrapping_add((125) as u8);
+    buffer1[36] = buffer1[36].wrapping_add(125_u8);
 
     // C: buffer1[124] = rol8x((((74 & buffer1[138]) | ((74 | buffer1[138]) & buffer0[15])) & buffer0[buffer1[43] % 20]) | (((74 & buffer1[138]) | ((74 | buffer1[138]) & buffer0[15]) | buffer0[buffer1[43] % 20]) & 95) as u8, 4);
     buffer1[124] = (rol8x(
@@ -209,7 +190,7 @@ pub fn garble(
     buffer3[12] = (0u32.wrapping_sub(34).wrapping_sub(D)) as u8;
 
     // C: A = 8 - ((buffer2[22] & 7));     // NOTE: buffer2[22] = 74, so A is always 6 and B^C is just ror8(buffer1[33], 6);
-    A = 8u32.wrapping_sub(((buffer2[22] as u32) & 7)); // NOTE: (buffer2[22] as u32) = 74, so A is always 6 and B^C is just ror8((buffer1[33] as u32), 6);
+    A = 8u32.wrapping_sub((buffer2[22] as u32) & 7); // NOTE: (buffer2[22] as u32) = 74, so A is always 6 and B^C is just ror8((buffer1[33] as u32), 6);
 
     // C: B = (buffer1[33] >> (A & 7));
     B = ((buffer1[33] as u32) >> (A & 7));
@@ -247,7 +228,7 @@ pub fn garble(
     )) as u8;
 
     // C: buffer1[190] = 56;
-    buffer1[190] = (56) as u8;
+    buffer1[190] = 56_u8;
 
     // C: buffer2[8] ^= buffer3[0];
     buffer2[8] ^= (buffer3[0] as u32) as u8;
@@ -314,7 +295,7 @@ pub fn garble(
         .wrapping_sub(15)) as u8;
 
     // C: buffer1[123] ^= 221;
-    buffer1[123] ^= (221) as u8;
+    buffer1[123] ^= 221_u8;
 
     // C: A = ((buffer4[buffer3[0] % 21]) / 3) - buffer2[buffer3[4] % 35];
     A = ((buffer4[(buffer3[0] as usize) % 21] as u32) / 3).wrapping_sub(buffer2[(buffer3[4] as usize) % 35] as u32);
@@ -335,10 +316,10 @@ pub fn garble(
     buffer3[48] = ((buffer2[(buffer3[4] as usize) % 35] as u32) & 27) as u8;
 
     // C: buffer3[52] = 27;
-    buffer3[52] = (27) as u8;
+    buffer3[52] = 27_u8;
 
     // C: buffer3[56] = 199;
-    buffer3[56] = (199) as u8;
+    buffer3[56] = 199_u8;
 
     // C: buffer3[64] = buffer3[4] + (((((((buffer3[40] | buffer3[24]) & 177) | (buffer3[40] & buffer3[24])) & ((((buffer4[buffer3[0] % 20] & 177) | 176)) | ((buffer4[buffer3[0] % 21]) & !3))) | ((((buffer3[40] & buffer3[24]) | ((buffer3[40] | buffer3[24]) & 177)) & 199) | ((((buffer4[buffer3[0] % 21] & 1) + 176) | (buffer4[buffer3[0] % 21] & !3)) & buffer3[56]))) & (!buffer3[52])) | buffer3[48]);
     buffer3[64] = ((buffer3[4] as u32).wrapping_add(
@@ -506,7 +487,7 @@ pub fn garble(
     );
 
     // C: buffer0[17] = 115;
-    buffer0[17] = (115) as u8;
+    buffer0[17] = 115_u8;
 
     // C: buffer1[23] ^= ((((((buffer4[buffer1[17] % 21] | buffer0[buffer3[20] % 20]) & buffer3[72]) | (buffer4[buffer1[17] % 21] & buffer0[buffer3[20] % 20])) & (buffer1[50]/3)) |;
     buffer1[23] ^= ((((((buffer4[(buffer1[17] as usize) % 21] as u32 | buffer0[(buffer3[20] as usize) % 20] as u32)
@@ -633,11 +614,11 @@ pub fn garble(
         | (((buffer4[(buffer1[155] as usize) % 21] as u32) | (buffer1[105] as u32)) & 141);
 
     // C: buffer0[3] -= buffer4[(weird_rol32(F as u8, C)) as usize % 21];
-    buffer0[3] = buffer0[3].wrapping_sub((buffer4[(weird_rol32(F as u8, C)) as usize % 21]) as u8);
+    buffer0[3] = buffer0[3].wrapping_sub(buffer4[(weird_rol32(F as u8, C)) as usize % 21]);
 
     // C: buffer1[5] = weird_ror8(buffer0[12], ((buffer0[buffer1[61] % 20] / 5) & 7)) ^ (((!buffer2[buffer3[84] % 35]) & 0xffffffff) / 5);
     buffer1[5] = (weird_ror8(buffer0[12], ((buffer0[(buffer1[61] as usize) % 20] as u32 / 5) & 7))
-        ^ ((!(buffer2[(buffer3[84] as usize) % 35] as u32) & 0xffffffffu32) / 5)) as u8;
+        ^ (!(buffer2[(buffer3[84] as usize) % 35] as u32) / 5)) as u8;
 
     // C: buffer1[198] += buffer1[3];
     buffer1[198] = buffer1[198].wrapping_add((buffer1[3] as u32) as u8);
@@ -673,7 +654,7 @@ pub fn garble(
     buffer3[96] = (buffer1[143] as u32) as u8;
 
     // C: buffer3[100] = 27;
-    buffer3[100] = (27) as u8;
+    buffer3[100] = 27_u8;
 
     // C: buffer3[104] = (((buffer3[40] & !buffer2[8]) | (buffer1[35] & buffer2[8])) & buffer3[64]) ^ 119;
     buffer3[104] = (((((buffer3[40] as u32) & !(buffer2[8] as u32)) | ((buffer1[35] as u32) & (buffer2[8] as u32)))
@@ -710,7 +691,7 @@ pub fn garble(
     )) as u8;
 
     // C: buffer2[29] = 162;
-    buffer2[29] = (162) as u8;
+    buffer2[29] = 162_u8;
 
     // C: A = ((((buffer4[buffer3[88] % 21]) & 160) | (buffer0[buffer1[125] % 20] & 95)) >> 1);
     A = ((((buffer4[(buffer3[88] as usize) % 21] as u32) & 160)
@@ -829,20 +810,20 @@ mod tests {
         let mut b3 = [0u8; 132];
         let mut b4 = [0u8; 21];
 
-        for i in 0..20 {
-            b0[i] = ((i as i32 * 37 + seed) & 0xff) as u8;
+        for (i, slot) in b0.iter_mut().enumerate() {
+            *slot = ((i as i32 * 37 + seed) & 0xff) as u8;
         }
-        for i in 0..210 {
-            b1[i] = ((i as i32 * 73 + seed + 7) & 0xff) as u8;
+        for (i, slot) in b1.iter_mut().enumerate() {
+            *slot = ((i as i32 * 73 + seed + 7) & 0xff) as u8;
         }
-        for i in 0..35 {
-            b2[i] = ((i as i32 * 51 + seed + 29) & 0xff) as u8;
+        for (i, slot) in b2.iter_mut().enumerate() {
+            *slot = ((i as i32 * 51 + seed + 29) & 0xff) as u8;
         }
-        for i in 0..132 {
-            b3[i] = ((i as i32 * 19 + seed + 41) & 0xff) as u8;
+        for (i, slot) in b3.iter_mut().enumerate() {
+            *slot = ((i as i32 * 19 + seed + 41) & 0xff) as u8;
         }
-        for i in 0..21 {
-            b4[i] = ((i as i32 * 97 + seed + 3) & 0xff) as u8;
+        for (i, slot) in b4.iter_mut().enumerate() {
+            *slot = ((i as i32 * 97 + seed + 3) & 0xff) as u8;
         }
 
         garble(&mut b0, &mut b1, &mut b2, &mut b3, &b4);

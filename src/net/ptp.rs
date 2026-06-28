@@ -5,7 +5,8 @@
 //! Ports 319/320 require root or CAP_NET_BIND_SERVICE.
 
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::util::now_ns;
 
 /// PTP message types (IEEE 1588).
 #[repr(u8)]
@@ -194,13 +195,6 @@ impl OffsetSmoother {
     pub fn reset(&mut self) {
         self.initialized = false;
     }
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }
 
 #[cfg(test)]

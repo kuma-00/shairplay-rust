@@ -3,6 +3,9 @@
 //! Sends timing requests to the iPhone and responds to incoming
 //! timing requests. Required for legacy (non-PTP) AirPlay connections.
 
+/// Seconds between the NTP epoch (1900-01-01) and the UNIX epoch (1970-01-01).
+const NTP_UNIX_EPOCH_OFFSET_SECS: u64 = 0x83AA_7E80; // 2_208_988_800
+
 /// timing requests and sends periodic keepalives. Required for legacy AirPlay
 /// connections where the iPhone expects NTP sync before streaming audio.
 pub(crate) fn spawn_ntp_responder(tsock: tokio::net::UdpSocket, remote_timing: std::net::SocketAddr) {
@@ -13,7 +16,7 @@ pub(crate) fn spawn_ntp_responder(tsock: tokio::net::UdpSocket, remote_timing: s
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default();
-            let secs = (now.as_secs() + 0x83AA7E80) as u32;
+            let secs = (now.as_secs() + NTP_UNIX_EPOCH_OFFSET_SECS) as u32;
             let frac = ((now.subsec_nanos() as u64) << 32) / 1_000_000_000;
             (secs, frac as u32)
         };

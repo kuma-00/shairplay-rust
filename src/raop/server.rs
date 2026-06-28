@@ -212,7 +212,25 @@ impl RaopServerBuilder {
         #[cfg(feature = "ap2")]
         let pairing_id = derive_pi_from_hwaddr(&hwaddr);
         #[cfg(feature = "ap2")]
+        let device_id = crate::util::hwaddr_airplay(&hwaddr);
+        #[cfg(feature = "ap2")]
         let airplay_name = self.name.clone();
+
+        #[cfg(feature = "ap2")]
+        let pairing_store: Arc<dyn PairingStore> = self
+            .pairing_store
+            .unwrap_or_else(|| Arc::new(MemoryPairingStore::default()));
+        // Resolve the accessory's long-term identity once: reuse a persisted seed
+        // if the store has one, otherwise generate a random seed and hand it back
+        // for persistence. (A store with no identity persistence — e.g. the default
+        // in-memory one — yields a fresh identity each start; persist it via
+        // `PairingStore::load_identity`/`save_identity` to avoid re-pairing.)
+        #[cfg(feature = "ap2")]
+        let identity_seed = pairing_store.load_identity().unwrap_or_else(|| {
+            let seed = crate::crypto::pairing_homekit::generate_identity_seed();
+            pairing_store.save_identity(seed);
+            seed
+        });
 
         let shared = Arc::new(RaopShared {
             rsakey,
@@ -221,9 +239,9 @@ impl RaopServerBuilder {
             password: self.password.unwrap_or_default(),
             handler,
             #[cfg(feature = "ap2")]
-            pairing_store: self
-                .pairing_store
-                .unwrap_or_else(|| Arc::new(MemoryPairingStore::default())),
+            pairing_store,
+            #[cfg(feature = "ap2")]
+            identity_seed,
             output_sample_rate: self.output_sample_rate,
             output_max_channels: self.output_max_channels,
             #[cfg(feature = "ap2")]
@@ -236,6 +254,8 @@ impl RaopServerBuilder {
             video_eiv: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "ap2")]
             pairing_id,
+            #[cfg(feature = "ap2")]
+            device_id,
             #[cfg(feature = "ap2")]
             airplay_name,
             #[cfg(feature = "hls")]
@@ -320,8 +340,7 @@ impl RaopServer {
         #[cfg(feature = "ap2")]
         {
             if self.mode == AirPlayMode::AirPlay2 {
-                let device_id = crate::util::hwaddr_airplay(&self.hwaddr);
-                let (_, vk) = crate::crypto::pairing_homekit::server_keypair(&device_id);
+                let (_, vk) = crate::crypto::pairing_homekit::identity_keypair(&self.shared.identity_seed);
                 let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
                 let pi = self.shared.pairing_id.clone();
                 return AirPlayServiceInfo::new_airplay2(

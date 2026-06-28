@@ -16,13 +16,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, warn};
 
 use crate::codec::aac::{AacDecoder, AudioSsrc};
-use crate::error::NetworkError;
+use crate::error::{CodecError, NetworkError, ShairplayError};
+use crate::raop::audio_pipeline::{NONCE_TRAIL_LEN, RTP_HEADER_LEN, decrypt_rtp_chacha};
 use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
-
-/// RTP header length in bytes.
-const RTP_HEADER_LEN: usize = 12;
-/// Trailing nonce bytes appended to each ChaCha20-Poly1305 encrypted packet.
-const NONCE_TRAIL_LEN: usize = 8;
+use crate::util::now_ns;
 
 #[derive(Debug, Clone)]
 /// Output configuration passed from the server builder.
@@ -189,11 +186,12 @@ impl BufferedAudioProcessor {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("Buffered audio accept failed: {e}");
+                    handler.on_error(&ShairplayError::Network(NetworkError::Io(e)));
                     return;
                 }
             };
             info!(%addr, "Buffered audio client connected");
-            receive_loop(stream, &shk, output_config, state4).await;
+            receive_loop(stream, &shk, output_config, state4, &handler).await;
         });
 
         cmd_tx
@@ -206,8 +204,9 @@ async fn receive_loop(
     shk: &[u8; 32],
     output_config: OutputConfig,
     state: Arc<(Mutex<PlayoutState>, Condvar)>,
+    handler: &Arc<dyn AudioHandler>,
 ) {
-    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead, aead::Payload};
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 
     let cipher = ChaCha20Poly1305::new(shk.into());
     let mut len_buf = [0u8; 2];
@@ -248,6 +247,9 @@ async fn receive_loop(
             decoder = AacDecoder::new(src_sr, src_ch).ok();
             if decoder.is_none() {
                 warn!("Failed to create AAC decoder for {:?}", ssrc);
+                handler.on_error(&ShairplayError::Codec(CodecError::UnsupportedFormat(format!(
+                    "AAC decoder init failed (ssrc={ssrc:?}, sample_rate={src_sr}, channels={src_ch})"
+                ))));
             }
 
             let target_sr = output_config.sample_rate.unwrap_or(src_sr);
@@ -270,25 +272,10 @@ async fn receive_loop(
             cvar.notify_all();
         }
 
-        // Decrypt
-        let pkt_len = packet.len();
-        let mut nonce = [0u8; 12];
-        nonce[4..12].copy_from_slice(&packet[pkt_len - NONCE_TRAIL_LEN..]);
-        let aad = packet[4..12].to_vec();
-        let ciphertext = &packet[RTP_HEADER_LEN..pkt_len - NONCE_TRAIL_LEN];
-
-        let plaintext = match cipher.decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: ciphertext,
-                aad: &aad,
-            },
-        ) {
-            Ok(p) => p,
-            Err(_) => {
-                debug!("Audio decrypt failed");
-                continue;
-            }
+        // Decrypt the ChaCha20-Poly1305 RTP frame.
+        let Some(plaintext) = decrypt_rtp_chacha(&cipher, &packet) else {
+            debug!("Audio decrypt failed");
+            continue;
         };
 
         // Decode
@@ -300,20 +287,18 @@ async fn receive_loop(
 
         if let Some(pcm_data) = pcm {
             // Convert bytes to f32 samples for processing
-            let mut samples: Vec<f32> = pcm_data
+            let samples: Vec<f32> = pcm_data
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
 
-            // Channel mixdown if needed
-            if source_channels > output_channels {
-                samples = crate::codec::resample::mixdown(&samples, source_channels as usize, output_channels as usize);
-            }
-
-            // Resample if needed
-            if let Some(ref mut rs) = stream_resampler {
-                samples = rs.process(&samples);
-            }
+            // Mix down + resample to the output format.
+            let samples = crate::codec::resample::mixdown_and_resample(
+                samples,
+                source_channels,
+                output_channels,
+                &mut stream_resampler,
+            );
 
             let (lock, cvar) = &*state;
             let mut s = lock.lock().unwrap();
@@ -390,12 +375,4 @@ fn delivery_loop(
         }
     }
     info!("Delivery loop ended");
-}
-
-/// Current wall-clock time in nanoseconds since UNIX epoch.
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
 }

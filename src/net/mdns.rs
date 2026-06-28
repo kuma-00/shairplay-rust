@@ -34,6 +34,10 @@ pub const RAOP_MD: &str = "0,1,2";
 pub const RAOP_SM: &str = "false";
 /// Encryption key type.
 pub const RAOP_EK: &str = "1";
+/// AP2 encryption types advertised in `_raop` TXT (0=none, 3/5=FairPlay).
+pub const RAOP_AP2_ET: &str = "0,3,5";
+/// AP2 `_raop` protocol version (65537 = 0x10001).
+pub const RAOP_AP2_VN: &str = "65537";
 
 /// Global feature bitmask for AP1 discovery.
 pub const GLOBAL_FEATURES: u32 = 0x7;
@@ -130,19 +134,19 @@ impl AirPlayServiceInfo {
 
         let raop_txt = vec![
             // AP1 compatibility fields (allows classic AirPlay fallback)
-            ("cn".into(), "0,1".into()),
-            ("da".into(), "true".into()),
-            ("et".into(), "0,3,5".into()),
+            ("cn".into(), RAOP_CN.into()),
+            ("da".into(), RAOP_DA.into()),
+            ("et".into(), RAOP_AP2_ET.into()),
             ("pw".into(), (if password { "true" } else { "false" }).into()),
             // AP2 fields
             ("ft".into(), ft.clone()),
             ("fv".into(), AP2_FW_VERSION.into()),
             ("sf".into(), format!("0x{AP2_STATUS_FLAGS:X}")),
-            ("md".into(), "0,1,2".into()),
+            ("md".into(), RAOP_MD.into()),
             ("am".into(), GLOBAL_MODEL.into()),
             ("pk".into(), pk_hex.into()),
-            ("tp".into(), "TCP,UDP".into()), // TCP for AP1 fallback, UDP for AP2
-            ("vn".into(), "65537".into()),
+            ("tp".into(), RAOP_TP.into()), // TCP for AP1 fallback, UDP for AP2
+            ("vn".into(), RAOP_AP2_VN.into()),
             ("vs".into(), AP2_SRCVERS.into()),
             ("ov".into(), AP2_OSVERS.into()),
         ];

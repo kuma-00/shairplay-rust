@@ -2,6 +2,8 @@
 
 pub use crate::proto::dmap::TrackMetadata;
 
+#[cfg(feature = "ap2")]
+pub mod audio_pipeline;
 pub mod buffer;
 #[cfg(feature = "ap2")]
 pub mod buffered_audio;

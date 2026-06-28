@@ -27,6 +27,11 @@ use crate::raop::{AudioCodec, AudioFormat, AudioHandler};
 /// Sentinel value for [`RtpState::flush`] indicating no flush is pending.
 const NO_FLUSH: i32 = -42;
 
+/// RTP payload type for retransmit (RESEND) responses on the control channel.
+const CTRL_PAYLOAD_TYPE: u8 = 0x56;
+/// Bytes of retransmit header preceding the original RTP packet in a RESEND.
+const RETRANSMIT_HEADER_LEN: usize = 4;
+
 /// Determine the bind address for RTP sockets.
 /// Uses the specific local IP for routable addresses (respects BindConfig).
 /// Falls back to unspecified for link-local IPv6 — the iPhone may send RTP
@@ -138,13 +143,32 @@ pub struct RaopRtp {
     remote_socket: std::net::SocketAddr,
 }
 
+/// Build a resampler for the AP1 RTP path: `Some` when an explicit output rate
+/// differs from the source rate, otherwise `None` (native-rate passthrough).
+/// Shared by the UDP and TCP receive arms of [`RaopRtp::start`].
+#[cfg(feature = "resample")]
+fn make_resampler(
+    output_sample_rate: Option<u32>,
+    src_sample_rate: u32,
+    channels: usize,
+) -> Option<crate::codec::resample::StreamResampler> {
+    match output_sample_rate {
+        Some(target) if target != src_sample_rate => {
+            crate::codec::resample::StreamResampler::new(src_sample_rate, target, channels)
+        }
+        _ => None,
+    }
+}
+
 impl RaopRtp {
     /// Create a new RTP session from SDP parameters and AES session keys.
     /// Does not bind sockets or start receiving — call [`start`](Self::start) for that.
-    pub fn new(callbacks: Arc<dyn AudioHandler>, config: RtpConfig) -> Self {
-        let buffer = RaopBuffer::new(&config.rtpmap, &config.fmtp, &config.aes_key, &config.aes_iv);
+    ///
+    /// Returns `None` if the (peer-supplied) `fmtp` attribute is malformed.
+    pub fn new(callbacks: Arc<dyn AudioHandler>, config: RtpConfig) -> Option<Self> {
+        let buffer = RaopBuffer::new(&config.rtpmap, &config.fmtp, &config.aes_key, &config.aes_iv)?;
         let alac_config = buffer.config().clone();
-        Self {
+        Some(Self {
             handler: callbacks,
             remote: config.remote,
             local_addr: config.local_addr,
@@ -158,7 +182,7 @@ impl RaopRtp {
             control_lport: 0,
             timing_lport: 0,
             data_lport: 0,
-        }
+        })
     }
 
     /// Bind UDP/TCP sockets and spawn the async receive task.
@@ -207,19 +231,11 @@ impl RaopRtp {
             });
 
             #[cfg(feature = "resample")]
-            let mut resampler = if let Some(target) = self.output_sample_rate {
-                if target != config.sample_rate {
-                    crate::codec::resample::StreamResampler::new(
-                        config.sample_rate,
-                        target,
-                        config.num_channels as usize,
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let mut resampler = make_resampler(
+                self.output_sample_rate,
+                config.sample_rate,
+                config.num_channels as usize,
+            );
 
             let buffer = self.buffer.clone();
             let state = self.state.clone();
@@ -267,10 +283,10 @@ impl RaopRtp {
                         // Control channel: retransmit responses (payload type 0x56).
                         result = csock.recv_from(&mut ctrl_packet) => {
                             if let Ok((len, _)) = result
-                                && len >= 12 && (ctrl_packet[1] & !0x80) == 0x56 {
+                                && len >= 12 && (ctrl_packet[1] & !0x80) == CTRL_PAYLOAD_TYPE {
                                     let mut buf = buffer.lock().await;
                                     // Retransmit packets have a 4-byte header before the original RTP.
-                                    if len > 4 { buf.queue(&ctrl_packet[4..len], true); }
+                                    if len > RETRANSMIT_HEADER_LEN { buf.queue(&ctrl_packet[RETRANSMIT_HEADER_LEN..len], true); }
                                 }
                         }
                         _ = shutdown_rx.changed() => break,
@@ -292,19 +308,11 @@ impl RaopRtp {
             });
 
             #[cfg(feature = "resample")]
-            let mut resampler = if let Some(target) = self.output_sample_rate {
-                if target != config.sample_rate {
-                    crate::codec::resample::StreamResampler::new(
-                        config.sample_rate,
-                        target,
-                        config.num_channels as usize,
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let mut resampler = make_resampler(
+                self.output_sample_rate,
+                config.sample_rate,
+                config.num_channels as usize,
+            );
 
             let buffer = self.buffer.clone();
             let state = self.state.clone();

@@ -29,14 +29,6 @@ pub enum ShairplayError {
 /// Errors from the AirPlay server and session handling.
 #[derive(Debug, Error)]
 pub enum ServerError {
-    /// Server has not been started yet.
-    #[error("server not started")]
-    NotStarted,
-
-    /// Server is already running.
-    #[error("server already running")]
-    AlreadyRunning,
-
     /// Maximum number of concurrent clients reached.
     #[error("max clients reached ({0})")]
     MaxClients(usize),
@@ -48,10 +40,6 @@ pub enum ServerError {
     /// Password has invalid length.
     #[error("invalid password length: {0}")]
     InvalidPassword(usize),
-
-    /// Audio handler returned an error.
-    #[error("audio handler error: {0}")]
-    AudioHandler(String),
 }
 
 /// Errors from cryptographic operations (RSA, pairing, FairPlay, AES).
@@ -113,10 +101,6 @@ pub enum ProtocolError {
     #[error("plist parse error: {0}")]
     Plist(String),
 
-    /// HTTP Digest authentication error.
-    #[error("HTTP digest auth error: {0}")]
-    DigestAuth(String),
-
     /// Request data is incomplete (need more bytes).
     #[error("incomplete request")]
     Incomplete,
@@ -125,14 +109,6 @@ pub enum ProtocolError {
 /// Errors from audio codec operations (ALAC, AAC decoding).
 #[derive(Debug, Error)]
 pub enum CodecError {
-    /// ALAC frame decoding failed.
-    #[error("ALAC decode error: {0}")]
-    AlacDecode(String),
-
-    /// AAC frame decoding failed.
-    #[error("AAC decode error: {0}")]
-    AacDecode(String),
-
     /// Audio format not supported.
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),

@@ -7,12 +7,19 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use num_bigint::BigUint;
 use sha2::{Digest, Sha512};
+use subtle::ConstantTimeEq;
 
 use crate::crypto::tlv::{TlvType, TlvValues};
 use crate::error::CryptoError;
 
 const USERNAME: &str = "Pair-Setup";
 const TRANSIENT_PIN: &str = "3939";
+
+// HKDF salt/info labels reused across the pair-setup and pair-verify handshakes.
+const PS_ENCRYPT_SALT: &str = "Pair-Setup-Encrypt-Salt";
+const PS_ENCRYPT_INFO: &str = "Pair-Setup-Encrypt-Info";
+const PV_ENCRYPT_SALT: &str = "Pair-Verify-Encrypt-Salt";
+const PV_ENCRYPT_INFO: &str = "Pair-Verify-Encrypt-Info";
 
 // RFC 5054 3072-bit group
 const N_3072_HEX: &str = "\
@@ -164,7 +171,8 @@ impl SrpServer {
             &self.session_key,
         );
 
-        if proof != expected_m.as_slice() {
+        // Constant-time comparison of the client's SRP proof.
+        if !bool::from(proof.ct_eq(expected_m.as_slice())) {
             self.verified = false;
             return Ok(false);
         }
@@ -325,15 +333,46 @@ fn decrypt_chacha(key: &[u8; 32], nonce_bytes: &[u8; 12], ciphertext_with_tag: &
         .map_err(|_| CryptoError::PairingHandshake("ChaCha20 decrypt failed".into()))
 }
 
-/// Deterministic Ed25519 keypair from device_id (matches C server_keypair).
+/// Build the accessory's long-term Ed25519 identity keypair from a 32-byte secret seed.
+///
+/// This is the secure path: `seed` must come from a CSPRNG (see
+/// [`generate_identity_seed`]) and be persisted across restarts via
+/// [`PairingStore::load_identity`]/[`save_identity`]. The resulting verifying key
+/// is what gets advertised in the mDNS `pk` record and used to sign pair-setup M6
+/// and pair-verify M2.
+///
+/// [`PairingStore::load_identity`]: crate::raop::PairingStore::load_identity
+/// [`save_identity`]: crate::raop::PairingStore::save_identity
+pub fn identity_keypair(seed: &[u8; 32]) -> (SigningKey, VerifyingKey) {
+    let sk = SigningKey::from_bytes(seed);
+    let vk = sk.verifying_key();
+    (sk, vk)
+}
+
+/// Generate a fresh random 32-byte Ed25519 identity seed from the OS CSPRNG.
+pub fn generate_identity_seed() -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
+    seed
+}
+
+/// **INSECURE** — deterministic Ed25519 keypair derived from the public `device_id`
+/// (matches the original C `server_keypair`, i.e. libsodium `crypto_sign_seed_keypair`
+/// over the zero-padded device id).
+///
+/// The device id is advertised publicly over mDNS, so the derived private key
+/// contains no secret entropy and is trivially reconstructable by anyone on the
+/// network — it must not be used as a real accessory identity. Retained only for
+/// byte-compatible C interop and golden-vector tests. For a real identity use
+/// [`identity_keypair`] seeded from [`generate_identity_seed`] and persist it via
+/// [`PairingStore`](crate::raop::PairingStore); to opt back into the legacy
+/// behaviour, have `load_identity` return this seed (zero-padded device id).
 pub fn server_keypair(device_id: &str) -> (SigningKey, VerifyingKey) {
     let mut seed = [0u8; 32];
     let bytes = device_id.as_bytes();
     let len = bytes.len().min(32);
     seed[..len].copy_from_slice(&bytes[..len]);
-    let sk = SigningKey::from_bytes(&seed);
-    let vk = sk.verifying_key();
-    (sk, vk)
+    identity_keypair(&seed)
 }
 
 fn make_nonce(tag: &[u8]) -> [u8; 12] {
@@ -366,12 +405,7 @@ impl SrpServer {
             .ok_or_else(|| CryptoError::PairingHandshake("M5: missing encrypted data".into()))?;
 
         let mut derived_key = [0u8; 32];
-        hkdf_derive(
-            &self.session_key,
-            "Pair-Setup-Encrypt-Salt",
-            "Pair-Setup-Encrypt-Info",
-            &mut derived_key,
-        )?;
+        hkdf_derive(&self.session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
 
         let nonce = make_nonce(b"PS-Msg05");
         let decrypted = decrypt_chacha(&derived_key, &nonce, enc)?;
@@ -419,8 +453,12 @@ impl SrpServer {
     }
 
     /// Build M6 response: encrypted TLV with server identifier, signature, public key.
-    pub fn build_m6(&self, device_id: &str) -> Result<Vec<u8>, CryptoError> {
-        let (sk, vk) = server_keypair(device_id);
+    ///
+    /// `device_id` is the public accessory identifier (placed in the TLV); the
+    /// signature is produced with the secret long-term identity key built from
+    /// `identity_seed`.
+    pub fn build_m6(&self, device_id: &str, identity_seed: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
+        let (sk, vk) = identity_keypair(identity_seed);
 
         // Derive signing material
         let mut device_x = [0u8; 32];
@@ -447,12 +485,7 @@ impl SrpServer {
 
         // Encrypt
         let mut derived_key = [0u8; 32];
-        hkdf_derive(
-            &self.session_key,
-            "Pair-Setup-Encrypt-Salt",
-            "Pair-Setup-Encrypt-Info",
-            &mut derived_key,
-        )?;
+        hkdf_derive(&self.session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
         let nonce = make_nonce(b"PS-Msg06");
         let encrypted = encrypt_chacha(&derived_key, &nonce, &plaintext)?;
 
@@ -481,8 +514,11 @@ pub struct PairVerifyServer {
 
 impl PairVerifyServer {
     /// Create a new pair-verify server for the given device ID.
-    pub fn new(device_id: &str) -> Self {
-        let (sk, _) = server_keypair(device_id);
+    ///
+    /// `device_id` is the public accessory identifier; M2 is signed with the
+    /// secret long-term identity key built from `identity_seed`.
+    pub fn new(device_id: &str, identity_seed: &[u8; 32]) -> Self {
+        let (sk, _) = identity_keypair(identity_seed);
 
         // Generate ephemeral Curve25519 keypair
         let mut eph_sk_bytes = [0u8; 32];
@@ -532,12 +568,7 @@ impl PairVerifyServer {
 
         // Encrypt with HKDF-derived key
         let mut derived_key = [0u8; 32];
-        hkdf_derive(
-            &self.shared_secret,
-            "Pair-Verify-Encrypt-Salt",
-            "Pair-Verify-Encrypt-Info",
-            &mut derived_key,
-        )?;
+        hkdf_derive(&self.shared_secret, PV_ENCRYPT_SALT, PV_ENCRYPT_INFO, &mut derived_key)?;
         let nonce = make_nonce(b"PV-Msg02");
         let encrypted = encrypt_chacha(&derived_key, &nonce, &plaintext)?;
 
@@ -560,12 +591,7 @@ impl PairVerifyServer {
             .ok_or_else(|| CryptoError::PairingHandshake("Verify M3: missing encrypted data".into()))?;
 
         let mut derived_key = [0u8; 32];
-        hkdf_derive(
-            &self.shared_secret,
-            "Pair-Verify-Encrypt-Salt",
-            "Pair-Verify-Encrypt-Info",
-            &mut derived_key,
-        )?;
+        hkdf_derive(&self.shared_secret, PV_ENCRYPT_SALT, PV_ENCRYPT_INFO, &mut derived_key)?;
         let nonce = make_nonce(b"PV-Msg03");
         let decrypted = decrypt_chacha(&derived_key, &nonce, enc)?;
 
@@ -595,6 +621,11 @@ impl PairVerifyServer {
             );
             vk.verify(&info, &sig).map_err(|_| CryptoError::PairingVerify)?;
             tracing::info!("Pair-verify: client signature verified");
+        } else {
+            // No key lookup provided → client signature is NOT verified. This is only
+            // safe for transient sessions; the shipped server always passes a real
+            // lookup (see handlers_ap2). Warn so an accidental None can't pass silently.
+            tracing::warn!("Pair-verify M3: no key lookup — skipping client signature verification");
         }
 
         self.completed = true;
@@ -613,8 +644,11 @@ impl PairVerifyServer {
         }
     }
 
-    /// Returns the ECDH shared secret computed during M1 processing.
-    /// Available before M3 completes — needed for video key derivation.
+    /// Returns the **unauthenticated** Curve25519 ECDH shared secret from M1.
+    ///
+    /// Exposed before M3 completes specifically for AP2 *video* key derivation,
+    /// where it is hashed together with a FairPlay key. It is not authenticated on
+    /// its own — never use it directly as a confidential key.
     pub fn ecdh_shared_secret(&self) -> &[u8; 32] {
         &self.shared_secret
     }
@@ -826,7 +860,7 @@ mod tests {
         server.process_m5(&m5.encode()).unwrap();
 
         // --- M6: Server responds with its encrypted device info ---
-        let m6_data = server.build_m6(device_id).unwrap();
+        let m6_data = server.build_m6(device_id, &[0x42u8; 32]).unwrap();
         let m6 = TlvValues::decode(&m6_data).unwrap();
         assert_eq!(m6.get_type(TlvType::State), Some(&[6u8][..]));
         let m6_enc = m6.get_type(TlvType::EncryptedData).unwrap();
@@ -867,7 +901,7 @@ mod tests {
     #[test]
     fn pair_verify_self_test() {
         let device_id = "VerifyDev01";
-        let mut server = PairVerifyServer::new(device_id);
+        let mut server = PairVerifyServer::new(device_id, &[0x42u8; 32]);
 
         // Client generates ephemeral key
         let mut client_eph_sk_bytes = [0u8; 32];
@@ -933,7 +967,7 @@ mod tests {
 
     #[test]
     fn pair_verify_rejects_unknown_persistent_client() {
-        let mut server = PairVerifyServer::new("VerifyDev01");
+        let mut server = PairVerifyServer::new("VerifyDev01", &[0x42u8; 32]);
 
         let mut client_eph_sk_bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_eph_sk_bytes);

@@ -81,6 +81,10 @@ impl StreamResampler {
     }
 }
 
+/// ITU-R BS.775 downmix coefficient (−3 dB) applied to centre and surround
+/// channels when folding 5.1/7.1 into stereo.
+const DOWNMIX_3DB: f32 = 0.707;
+
 /// Mix down multi-channel F32 audio to fewer channels.
 /// Uses ITU-R BS.775 downmix coefficients for 5.1 and 7.1.
 pub fn mixdown(input: &[f32], in_channels: usize, out_channels: usize) -> Vec<f32> {
@@ -93,7 +97,7 @@ pub fn mixdown(input: &[f32], in_channels: usize, out_channels: usize) -> Vec<f3
 
     let frames = input.len() / in_channels;
     let mut output = Vec::with_capacity(frames * 2);
-    let k: f32 = 0.707; // -3dB
+    let k: f32 = DOWNMIX_3DB;
 
     for frame in input.chunks_exact(in_channels) {
         let (l, r) = match in_channels {
@@ -123,9 +127,35 @@ pub fn mixdown(input: &[f32], in_channels: usize, out_channels: usize) -> Vec<f3
     output
 }
 
+/// Mix `samples` down to `out_channels` (if `src_channels` is larger) and then
+/// resample through `resampler` (if present). This is the shared tail of the AP2
+/// realtime and buffered receive pipelines.
+pub fn mixdown_and_resample(
+    mut samples: Vec<f32>,
+    src_channels: u8,
+    out_channels: u8,
+    resampler: &mut Option<StreamResampler>,
+) -> Vec<f32> {
+    if src_channels > out_channels {
+        samples = mixdown(&samples, src_channels as usize, out_channels as usize);
+    }
+    if let Some(rs) = resampler {
+        samples = rs.process(&samples);
+    }
+    samples
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixdown_and_resample_passthrough_is_identity() {
+        // No mixdown (src == out) and no resampler → samples returned unchanged.
+        let samples = vec![0.1, 0.2, 0.3, 0.4];
+        let mut none = None;
+        assert_eq!(mixdown_and_resample(samples.clone(), 2, 2, &mut none), samples);
+    }
 
     #[test]
     fn resample_small_chunks() {

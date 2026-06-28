@@ -15,3 +15,5 @@ pub mod pairing_homekit;
 pub mod tlv;
 #[cfg(feature = "video")]
 pub mod video_cipher;
+#[cfg(feature = "video")]
+pub mod video_key;
