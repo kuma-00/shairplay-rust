@@ -172,10 +172,13 @@ pub fn receiver_features() -> u64 {
             AudioFormats1,                     // bit 19
             AudioFormats2,                     // bit 20
             AudioFormats3,                     // bit 21
+            AudioFormats4,                     // bit 22
             HasUnifiedAdvertiserInfo,          // bit 30
         ]);
-        // Bits without enum variants (from UxPlay's 0x527FFEE6)
-        val |= (1 << 10) | (1 << 12) | (1 << 13) | (1 << 22) | (1 << 25) | (1 << 28);
+        // Bits 10/12/13/25/28 have no public AirPlay-spec names — UxPlay sets them
+        // empirically for legacy screen-mirroring compat. Kept as raw shifts
+        // deliberately; the exact value is pinned by `video_receiver_uses_uxplay_features`.
+        val |= (1 << 10) | (1 << 12) | (1 << 13) | (1 << 25) | (1 << 28);
         val
     }
 
@@ -233,6 +236,8 @@ mod tests {
     #[cfg(not(feature = "video"))]
     fn audio_receiver_has_required_bits() {
         let f = receiver_features();
+        // Pin the exact known-good value (matches shairport-sync, iOS 18 verified).
+        assert_eq!(f, 0x0001_C340_405D_4A00, "audio receiver features drifted");
         // Core AP2 requirements (from shairport-sync)
         assert!(f & (1 << 9) != 0, "SupportsAirPlayAudio");
         assert!(f & (1 << 11) != 0, "AudioRedundant");
