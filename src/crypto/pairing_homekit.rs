@@ -398,58 +398,7 @@ impl SrpServer {
                 "M5: not allowed for transient pairing".into(),
             ));
         }
-        let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
-
-        let enc = tlv
-            .get_type(TlvType::EncryptedData)
-            .ok_or_else(|| CryptoError::PairingHandshake("M5: missing encrypted data".into()))?;
-
-        let mut derived_key = [0u8; 32];
-        hkdf_derive(&self.session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
-
-        let nonce = make_nonce(b"PS-Msg05");
-        let decrypted = decrypt_chacha(&derived_key, &nonce, enc)?;
-
-        let inner = TlvValues::decode(&decrypted).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
-        let identifier = inner
-            .get_type(TlvType::Identifier)
-            .ok_or_else(|| CryptoError::PairingHandshake("M5: missing identifier".into()))?;
-        let signature = inner
-            .get_type(TlvType::Signature)
-            .ok_or_else(|| CryptoError::PairingHandshake("M5: missing signature".into()))?;
-        let client_pk = inner
-            .get_type(TlvType::PublicKey)
-            .ok_or_else(|| CryptoError::PairingHandshake("M5: missing public key".into()))?;
-
-        let mut device_x = [0u8; 32];
-        hkdf_derive(
-            &self.session_key,
-            "Pair-Setup-Controller-Sign-Salt",
-            "Pair-Setup-Controller-Sign-Info",
-            &mut device_x,
-        )?;
-
-        let mut info = Vec::new();
-        info.extend_from_slice(&device_x);
-        info.extend_from_slice(identifier);
-        info.extend_from_slice(client_pk);
-
-        let pk_array: [u8; 32] = client_pk
-            .try_into()
-            .map_err(|_| CryptoError::PairingHandshake("M5: invalid public key length".into()))?;
-        let vk = VerifyingKey::from_bytes(&pk_array)
-            .map_err(|_| CryptoError::PairingHandshake("M5: invalid public key".into()))?;
-        let sig = Signature::from_bytes(
-            signature
-                .try_into()
-                .map_err(|_| CryptoError::PairingHandshake("M5: invalid signature length".into()))?,
-        );
-        vk.verify(&info, &sig).map_err(|_| CryptoError::PairingVerify)?;
-
-        let id_str = String::from_utf8(identifier.to_vec())
-            .map_err(|_| CryptoError::PairingHandshake("M5: invalid identifier encoding".into()))?;
-
-        Ok((id_str, pk_array))
+        setup_verify_client_identity(&self.session_key, data)
     }
 
     /// Build M6 response: encrypted TLV with server identifier, signature, public key.
@@ -458,42 +407,115 @@ impl SrpServer {
     /// signature is produced with the secret long-term identity key built from
     /// `identity_seed`.
     pub fn build_m6(&self, device_id: &str, identity_seed: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
-        let (sk, vk) = identity_keypair(identity_seed);
-
-        // Derive signing material
-        let mut device_x = [0u8; 32];
-        hkdf_derive(
-            &self.session_key,
-            "Pair-Setup-Accessory-Sign-Salt",
-            "Pair-Setup-Accessory-Sign-Info",
-            &mut device_x,
-        )?;
-
-        let mut info = Vec::new();
-        info.extend_from_slice(&device_x);
-        info.extend_from_slice(device_id.as_bytes());
-        info.extend_from_slice(vk.as_bytes());
-
-        let signature = sk.sign(&info);
-
-        // Build inner TLV
-        let mut inner = TlvValues::new();
-        inner.add(TlvType::Identifier as u8, device_id.as_bytes());
-        inner.add(TlvType::Signature as u8, &signature.to_bytes());
-        inner.add(TlvType::PublicKey as u8, vk.as_bytes());
-        let plaintext = inner.encode();
-
-        // Encrypt
-        let mut derived_key = [0u8; 32];
-        hkdf_derive(&self.session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
-        let nonce = make_nonce(b"PS-Msg06");
-        let encrypted = encrypt_chacha(&derived_key, &nonce, &plaintext)?;
-
-        let mut tlv = TlvValues::new();
-        tlv.add(TlvType::State as u8, &[6]);
-        tlv.add(TlvType::EncryptedData as u8, &encrypted);
-        Ok(tlv.encode())
+        setup_build_accessory_identity(&self.session_key, device_id, identity_seed)
     }
+}
+
+// --- Pair-Setup M5/M6 identity exchange ---
+//
+// The HomeKit identity-exchange steps layered on top of the SRP-6a session key:
+// M5 verifies the controller's Ed25519 long-term identity, M6 returns the
+// accessory's. Split out as pure functions over the session key to keep the
+// identity crypto separate from SrpServer's SRP state machine.
+
+/// Verify the controller's encrypted M5 identity TLV.
+/// Returns the controller's `(identifier, Ed25519 public key)` for persistent storage.
+fn setup_verify_client_identity(session_key: &[u8], data: &[u8]) -> Result<(String, [u8; 32]), CryptoError> {
+    let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
+
+    let enc = tlv
+        .get_type(TlvType::EncryptedData)
+        .ok_or_else(|| CryptoError::PairingHandshake("M5: missing encrypted data".into()))?;
+
+    let mut derived_key = [0u8; 32];
+    hkdf_derive(session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
+
+    let nonce = make_nonce(b"PS-Msg05");
+    let decrypted = decrypt_chacha(&derived_key, &nonce, enc)?;
+
+    let inner = TlvValues::decode(&decrypted).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
+    let identifier = inner
+        .get_type(TlvType::Identifier)
+        .ok_or_else(|| CryptoError::PairingHandshake("M5: missing identifier".into()))?;
+    let signature = inner
+        .get_type(TlvType::Signature)
+        .ok_or_else(|| CryptoError::PairingHandshake("M5: missing signature".into()))?;
+    let client_pk = inner
+        .get_type(TlvType::PublicKey)
+        .ok_or_else(|| CryptoError::PairingHandshake("M5: missing public key".into()))?;
+
+    let mut device_x = [0u8; 32];
+    hkdf_derive(
+        session_key,
+        "Pair-Setup-Controller-Sign-Salt",
+        "Pair-Setup-Controller-Sign-Info",
+        &mut device_x,
+    )?;
+
+    let mut info = Vec::new();
+    info.extend_from_slice(&device_x);
+    info.extend_from_slice(identifier);
+    info.extend_from_slice(client_pk);
+
+    let pk_array: [u8; 32] = client_pk
+        .try_into()
+        .map_err(|_| CryptoError::PairingHandshake("M5: invalid public key length".into()))?;
+    let vk = VerifyingKey::from_bytes(&pk_array)
+        .map_err(|_| CryptoError::PairingHandshake("M5: invalid public key".into()))?;
+    let sig = Signature::from_bytes(
+        signature
+            .try_into()
+            .map_err(|_| CryptoError::PairingHandshake("M5: invalid signature length".into()))?,
+    );
+    vk.verify(&info, &sig).map_err(|_| CryptoError::PairingVerify)?;
+
+    let id_str = String::from_utf8(identifier.to_vec())
+        .map_err(|_| CryptoError::PairingHandshake("M5: invalid identifier encoding".into()))?;
+
+    Ok((id_str, pk_array))
+}
+
+/// Build the accessory's encrypted M6 identity TLV, signed with the long-term identity key.
+fn setup_build_accessory_identity(
+    session_key: &[u8],
+    device_id: &str,
+    identity_seed: &[u8; 32],
+) -> Result<Vec<u8>, CryptoError> {
+    let (sk, vk) = identity_keypair(identity_seed);
+
+    // Derive signing material
+    let mut device_x = [0u8; 32];
+    hkdf_derive(
+        session_key,
+        "Pair-Setup-Accessory-Sign-Salt",
+        "Pair-Setup-Accessory-Sign-Info",
+        &mut device_x,
+    )?;
+
+    let mut info = Vec::new();
+    info.extend_from_slice(&device_x);
+    info.extend_from_slice(device_id.as_bytes());
+    info.extend_from_slice(vk.as_bytes());
+
+    let signature = sk.sign(&info);
+
+    // Build inner TLV
+    let mut inner = TlvValues::new();
+    inner.add(TlvType::Identifier as u8, device_id.as_bytes());
+    inner.add(TlvType::Signature as u8, &signature.to_bytes());
+    inner.add(TlvType::PublicKey as u8, vk.as_bytes());
+    let plaintext = inner.encode();
+
+    // Encrypt
+    let mut derived_key = [0u8; 32];
+    hkdf_derive(session_key, PS_ENCRYPT_SALT, PS_ENCRYPT_INFO, &mut derived_key)?;
+    let nonce = make_nonce(b"PS-Msg06");
+    let encrypted = encrypt_chacha(&derived_key, &nonce, &plaintext)?;
+
+    let mut tlv = TlvValues::new();
+    tlv.add(TlvType::State as u8, &[6]);
+    tlv.add(TlvType::EncryptedData as u8, &encrypted);
+    Ok(tlv.encode())
 }
 
 /// Lookup function for resolving a client identifier to its stored Ed25519 public key.
