@@ -62,16 +62,18 @@ impl HttpRequest {
 
     fn try_parse_headers(&mut self) -> Result<(), ProtocolError> {
         // httparse only accepts HTTP/1.x — Apple devices send RTSP/1.0.
-        // Replace RTSP/1.0 with HTTP/1.0 in the buffer before parsing.
-        let mut parse_buf = self.buffer.clone();
-        if let Some(pos) = parse_buf.windows(8).position(|w| w == b"RTSP/1.0") {
-            parse_buf[pos..pos + 4].copy_from_slice(b"HTTP");
+        // Rewrite RTSP/1.0 → HTTP/1.0 in place: the token lives in the request
+        // line (never the body), and once flipped the next scan finds nothing,
+        // so this stays correct across partial-parse retries without cloning the
+        // whole receive buffer on every call.
+        if let Some(pos) = self.buffer.windows(8).position(|w| w == b"RTSP/1.0") {
+            self.buffer[pos..pos + 4].copy_from_slice(b"HTTP");
         }
 
         let mut header_buf = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut header_buf);
 
-        match req.parse(&parse_buf) {
+        match req.parse(&self.buffer) {
             Ok(httparse::Status::Complete(body_offset)) => {
                 self.method = req.method.map(|m| m.to_string());
                 self.url = req.path.map(|p| p.to_string());
