@@ -34,11 +34,16 @@ impl RsaKey {
         Ok(Self { key })
     }
 
-    /// Sign an Apple challenge-response. Equivalent to rsakey_sign.
+    /// Sign an Apple-Challenge for the `Apple-Response` RAOP auth header.
+    /// Equivalent to rsakey_sign.
     ///
-    /// Constructs: challenge_bytes || ip_addr || hw_addr (min 32 bytes),
-    /// signs with PKCS#1 v1.5 type 1 padding (no hash OID prefix),
-    /// returns base64-encoded signature.
+    /// The signed payload is `challenge ‖ ip_addr ‖ hw_addr` — the base64-decoded
+    /// challenge, then the receiver's IP address, then its hardware (MAC) address,
+    /// concatenated in exactly that order and zero-padded to a minimum of 32 bytes.
+    /// The client reconstructs the same byte layout to validate the response, so the
+    /// field order and padding must match the AirPort/shairport reference exactly.
+    /// Signed with PKCS#1 v1.5 (type 1 padding, no hash-OID prefix); returns the
+    /// base64-encoded signature.
     pub fn sign_challenge(&self, b64_challenge: &str, ip_addr: &[u8], hw_addr: &[u8]) -> Result<String, CryptoError> {
         let challenge = B64
             .decode(b64_challenge)

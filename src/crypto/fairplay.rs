@@ -343,6 +343,24 @@ fn cycle(block: &mut [u8; 16], key_schedule: &[[u32; 4]; 11]) {
 
 // --- modified_md5.c port ---
 
+/// MD5 per-round additive constants: `K[i] = floor(2^32 * |sin(i + 1)|)`.
+///
+/// Precomputed rather than derived at runtime with `f64::sin`. Computing these
+/// on the fly relies on the platform libm's `sin`, which is not guaranteed to be
+/// bit-identical across targets — a 1-ULP difference would change `key_out` and
+/// silently corrupt the FairPlay key. A fixed table makes the result
+/// deterministic everywhere (and avoids 64 transcendental calls per block).
+const MD5_K: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501, 0x698098d8,
+    0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
+    0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87,
+    0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039,
+    0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
+    0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+    0xeb86d391,
+];
+
 fn modified_md5(original_block_in: &[u8], key_in: &[u8; 16], key_out: &mut [u8; 16]) {
     let mut block_in = [0u8; 64];
     block_in[..64.min(original_block_in.len())].copy_from_slice(&original_block_in[..64.min(original_block_in.len())]);
@@ -369,7 +387,7 @@ fn modified_md5(original_block_in: &[u8], key_in: &[u8; 16], key_out: &mut [u8; 
             | (block_in[4 * j + 2] as u32) << 8
             | block_in[4 * j + 3] as u32;
 
-        let k = ((1u64 << 32) as f64 * ((i + 1) as f64).sin().abs()) as u32;
+        let k = MD5_K[i as usize];
         let mut z = a.wrapping_add(input).wrapping_add(k);
 
         z = match i {
