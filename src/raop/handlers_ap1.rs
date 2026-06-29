@@ -337,8 +337,12 @@ pub(crate) fn handle_setup(
 pub(crate) fn handle_record(
     _conn: &mut RaopConnection,
     _request: &HttpRequest,
-    _response: &mut HttpResponse,
+    response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
+    // Mirror the AP2 RECORD response: classic RAOP clients expect an
+    // Audio-Latency header. The value is a placeholder — actual playback
+    // timing is handled by the RTP layer, not advertised here.
+    response.add_header("Audio-Latency", "0");
     None
 }
 
