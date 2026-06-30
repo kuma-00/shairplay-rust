@@ -364,6 +364,30 @@ mod ap2_tests {
         server.stop().await;
     }
 
+    #[test]
+    fn ap2_pin_pairing_service_info_advertises_persistent_pairing() {
+        let server = RaopServer::builder()
+            .name("PersistentPairingTest")
+            .hwaddr([0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
+            .port(0)
+            .pin("1234")
+            .build(empty_handler())
+            .unwrap();
+        let info = server.service_info();
+        let raop = |key: &str| info.raop_txt.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        let airplay = |key: &str| info.airplay_txt.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+
+        let expected_features = if cfg!(feature = "video") {
+            "0x527FFEE6,0x0"
+        } else {
+            "0x405D4A00,0x14340"
+        };
+        assert_eq!(raop("ft"), Some(expected_features));
+        assert_eq!(raop("sf"), Some("0x204"));
+        assert_eq!(airplay("features"), Some(expected_features));
+        assert_eq!(airplay("flags"), Some("0x204"));
+    }
+
     #[tokio::test]
     #[serial]
     async fn ap2_full_transient_pair_setup_m1_to_m4() {
