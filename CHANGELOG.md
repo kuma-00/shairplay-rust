@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.6.0...shairplay-v0.6.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **crypto:** use precomputed MD5 constant table for deterministic FairPlay key ([d341561](https://github.com/metaneutrons/shairplay-rust/commit/d341561be6f864cd10800c1a762c2bc49935f999))
+* **raop:** handle AP1 RECORD and advertise reachable mDNS addresses ([8a5a24c](https://github.com/metaneutrons/shairplay-rust/commit/8a5a24c4ab51ee8cd1083cac30b27f7e7d3340b3)), closes [#14](https://github.com/metaneutrons/shairplay-rust/issues/14)
+* **raop:** send Audio-Latency on AP1 RECORD for parity with AP2 ([d2a4828](https://github.com/metaneutrons/shairplay-rust/commit/d2a4828b71c4137f7354b23ba80b3cf5e3085b8f))
+
+
+### Performance Improvements
+
+* **http:** rewrite RTSP→HTTP in place instead of cloning the buffer ([203bd6b](https://github.com/metaneutrons/shairplay-rust/commit/203bd6b624f35c061ffc653d1d93fff75c08fe24))
+
 ## [0.6.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.5.0...shairplay-v0.6.0) (2026-06-28)
 
 
