@@ -1,5 +1,6 @@
 //! AP2 RTSP request handlers — pairing, encrypted SETUP, buffered audio, video.
 
+use crate::codec::alac::AlacFormat;
 use crate::crypto::pairing_homekit::{PairVerifyServer, SrpServer};
 #[cfg(feature = "video")]
 use crate::error::CryptoError;
@@ -522,13 +523,35 @@ fn setup_stream_realtime(
     stream_resp: &mut plist::Dictionary,
 ) -> Option<()> {
     let sr = stream0.get("sr").and_then(|v| v.as_unsigned_integer()).unwrap_or(44100);
-    #[cfg(feature = "video")]
     let spf = stream0.get("spf").and_then(|v| v.as_unsigned_integer()).unwrap_or(352);
+    let audio_format = stream0
+        .get("audioFormat")
+        .and_then(|v| v.as_unsigned_integer())
+        .unwrap_or(0) as u32;
+    let alac_format = AlacFormat::from_audio_format(audio_format).unwrap_or(AlacFormat {
+        sample_rate: sr as u32,
+        bit_depth: 16,
+        channels: 2,
+    });
     let shk = stream0.get("shk").and_then(|v| v.as_data()).unwrap_or(&[]);
 
     if shk.len() == 32 {
         // AP2 realtime ALAC — ChaCha20-Poly1305 per-packet encryption.
-        tracing::info!(stream_type = 96, sample_rate = sr, "AP2 realtime ALAC (ChaCha20)");
+        tracing::info!(
+            stream_type = 96,
+            sample_rate = sr,
+            samples_per_frame = spf,
+            audio_format,
+            alac_format = ?alac_format,
+            "AP2 realtime ALAC (ChaCha20)"
+        );
+        if AlacFormat::from_audio_format(audio_format).is_none() {
+            tracing::warn!(
+                audio_format,
+                sample_rate = sr,
+                "Unknown AP2 realtime ALAC audioFormat; falling back to SETUP sr and 16-bit stereo"
+            );
+        }
         let mut shk_arr = [0u8; 32];
         shk_arr.copy_from_slice(shk);
 
@@ -537,6 +560,10 @@ fn setup_stream_realtime(
 
         let handler = conn.shared.handler.clone();
         let output_config = crate::raop::realtime_audio::OutputConfig {
+            source_sample_rate: alac_format.sample_rate,
+            samples_per_frame: spf as u32,
+            channels: alac_format.channels,
+            bit_depth: alac_format.bit_depth,
             sample_rate: conn.shared.output_sample_rate,
             max_channels: conn.shared.output_max_channels,
         };
