@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.6.1...shairplay-v0.6.2) (2026-06-30)
+
+
+### Bug Fixes
+
+* **raop:** initialize AP2 realtime ALAC decoder ([4275710](https://github.com/metaneutrons/shairplay-rust/commit/4275710dbed01e3d4ad535a2ccf26f45423ce246)), closes [#20](https://github.com/metaneutrons/shairplay-rust/issues/20)
+
 ## [0.6.1](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.6.0...shairplay-v0.6.1) (2026-06-29)
 
 
