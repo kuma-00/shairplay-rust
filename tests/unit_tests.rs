@@ -409,56 +409,33 @@ mod ap2_tests {
     // Generated from libsodium crypto_aead_chacha20poly1305_ietf_encrypt
     // with shk=0x42*32, AAD=timestamp+ssrc, nonce from packet trail
 
+    // The packet + expected plaintext are an authoritative libsodium vector
+    // (crypto_aead_chacha20poly1305_ietf), and both tests exercise the PRODUCTION
+    // `decrypt_rtp_chacha` so the vector guards the real decrypt path rather than
+    // a copy of it.
+    const AUDIO_PACKET_HEX: &str = "809a000193eda3fd160000004ea11b7fc9f1c33dbf860ff8ae0b52a18df7c4cbe6066082bdc97419157558ec76f55c1e2bc54b119bf70102030405060708";
+
     #[test]
     fn c_vector_audio_packet_decrypt() {
-        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead, aead::Payload};
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+        use shairplay::raop::audio_pipeline::decrypt_rtp_chacha;
 
-        let packet = hex_decode(
-            "809a000193eda3fd160000004ea11b7fc9f1c33dbf860ff8ae0b52a18df7c4cbe6066082bdc97419157558ec76f55c1e2bc54b119bf70102030405060708",
-        );
+        let packet = hex_decode(AUDIO_PACKET_HEX);
+        let cipher = ChaCha20Poly1305::new((&[0x42u8; 32]).into());
 
-        let shk = [0x42u8; 32];
-        let cipher = ChaCha20Poly1305::new((&shk).into());
-
-        // Nonce: last 8 bytes, front-padded to 12
-        let pkt_len = packet.len();
-        let mut nonce = [0u8; 12];
-        nonce[4..12].copy_from_slice(&packet[pkt_len - 8..]);
-
-        // AAD: packet[4..12]
-        let aad = &packet[4..12];
-        // Ciphertext+tag: packet[12..len-8]
-        let ciphertext = &packet[12..pkt_len - 8];
-
-        let plaintext = cipher
-            .decrypt(Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad })
-            .expect("decryption should succeed");
-
+        let plaintext = decrypt_rtp_chacha(&cipher, &packet).expect("decryption should succeed");
         assert_eq!(std::str::from_utf8(&plaintext).unwrap(), "Hello AAC frame data here!");
     }
 
     #[test]
     fn audio_packet_wrong_key_fails() {
-        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead, aead::Payload};
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
+        use shairplay::raop::audio_pipeline::decrypt_rtp_chacha;
 
-        let packet = hex_decode(
-            "809a000193eda3fd160000004ea11b7fc9f1c33dbf860ff8ae0b52a18df7c4cbe6066082bdc97419157558ec76f55c1e2bc54b119bf70102030405060708",
-        );
+        let packet = hex_decode(AUDIO_PACKET_HEX);
+        let cipher = ChaCha20Poly1305::new((&[0x00u8; 32]).into());
 
-        let wrong_key = [0x00u8; 32];
-        let cipher = ChaCha20Poly1305::new((&wrong_key).into());
-
-        let pkt_len = packet.len();
-        let mut nonce = [0u8; 12];
-        nonce[4..12].copy_from_slice(&packet[pkt_len - 8..]);
-        let aad = &packet[4..12];
-        let ciphertext = &packet[12..pkt_len - 8];
-
-        assert!(
-            cipher
-                .decrypt(Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad })
-                .is_err()
-        );
+        assert!(decrypt_rtp_chacha(&cipher, &packet).is_none());
     }
 
     // --- Buffered audio length-prefix framing ---
