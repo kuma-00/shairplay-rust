@@ -4,27 +4,38 @@
 //! All traffic is encrypted with ChaCha20-Poly1305 using HKDF-derived keys.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::crypto::chacha_transport::EncryptedChannel;
 use crate::error::NetworkError;
 
 /// Handle for sending commands through the event channel.
 #[derive(Clone)]
-pub struct EventSender {
+pub(crate) struct EventSender {
+    // Load-bearing AND the outbound channel: holding this keeps the mpsc open for
+    // the connection's lifetime (stored in `RaopConnection::event_sender`), and
+    // `send()` pushes events through it. Currently unwired beyond the initial
+    // `updateInfo` queued at SETUP — see AP2-STATUS.md.
+    #[allow(dead_code)]
     tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 impl EventSender {
     /// Create from an existing channel sender.
-    pub fn from_tx(tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
+    pub(crate) fn from_tx(tx: mpsc::UnboundedSender<Vec<u8>>) -> Self {
         Self { tx }
     }
 
-    /// Send a plaintext message (will be encrypted before transmission).
-    pub fn send(&self, data: Vec<u8>) -> Result<(), NetworkError> {
+    /// Push an event to the controller over the encrypted AP2 event channel.
+    ///
+    /// Scaffolding for receiver-initiated outbound events (volume, now-playing,
+    /// progress). Today only the initial `updateInfo` is sent at SETUP time via
+    /// the raw channel sender; wiring this on receiver-side state changes would
+    /// enable fuller AP2 event reporting. Unwired — see AP2-STATUS.md.
+    #[allow(dead_code)] // unwired outbound-event API — see AP2-STATUS.md
+    pub(crate) fn send(&self, data: Vec<u8>) -> Result<(), NetworkError> {
         self.tx
             .send(data)
             .map_err(|_| NetworkError::Mdns("event channel closed".into()))
@@ -32,41 +43,15 @@ impl EventSender {
 }
 
 /// Async event channel that accepts one encrypted TCP connection.
-pub struct EventChannel {
-    listener: TcpListener,
-    /// Port number the listener is bound to.
-    pub port: u16,
-}
+pub(crate) struct EventChannel;
 
 impl EventChannel {
-    /// Bind a TCP listener on any available port at the given address.
-    pub async fn bind(addr: &str) -> Result<Self, NetworkError> {
-        let listener = TcpListener::bind(addr).await?;
-        let port = listener.local_addr()?.port();
-        debug!(port, "Event channel listening");
-        Ok(Self { listener, port })
-    }
-
-    /// Run the event channel. Returns an EventSender for sending commands.
-    pub async fn run(self, channel: EncryptedChannel) -> EventSender {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let sender = EventSender { tx };
-
-        let (stream, addr) = match self.listener.accept().await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("Event channel accept failed: {e}");
-                return sender;
-            }
-        };
-        info!(%addr, "Event channel client connected");
-
-        tokio::spawn(Self::handle(stream, channel, rx));
-        sender
-    }
-
     /// Handle a connected event channel stream (public for use from handlers).
-    pub async fn handle_stream(stream: TcpStream, channel: EncryptedChannel, cmd_rx: mpsc::UnboundedReceiver<Vec<u8>>) {
+    pub(crate) async fn handle_stream(
+        stream: TcpStream,
+        channel: EncryptedChannel,
+        cmd_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    ) {
         Self::handle(stream, channel, cmd_rx).await;
     }
 
@@ -110,42 +95,5 @@ impl EventChannel {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::crypto::chacha_transport::CipherContext;
-
-    #[tokio::test]
-    async fn event_channel_binds() {
-        let ch = EventChannel::bind("0.0.0.0:0").await.unwrap();
-        assert!(ch.port > 0);
-    }
-
-    #[tokio::test]
-    async fn event_channel_roundtrip() {
-        let ch = EventChannel::bind("0.0.0.0:0").await.unwrap();
-        let port = ch.port;
-
-        let key = [0x42u8; 32];
-        let server_channel = EncryptedChannel {
-            encrypt_ctx: CipherContext::new(key),
-            decrypt_ctx: CipherContext::new(key),
-        };
-
-        // Spawn server
-        let handle = tokio::spawn(async move { ch.run(server_channel).await });
-
-        // Client connects and sends encrypted data
-        let mut client = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
-        let mut client_enc = CipherContext::new(key);
-        let encrypted = client_enc.encrypt(b"test event").unwrap();
-        client.write_all(&encrypted).await.unwrap();
-
-        // Close triggers server exit
-        drop(client);
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
     }
 }

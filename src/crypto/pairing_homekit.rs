@@ -41,7 +41,7 @@ const G_3072: u32 = 5;
 const N_3072_LEN: usize = 384; // bytes
 
 /// SRP-6a server state for HomeKit pairing.
-pub struct SrpServer {
+pub(crate) struct SrpServer {
     n: BigUint,
     g: BigUint,
     salt: Vec<u8>,
@@ -60,7 +60,7 @@ impl SrpServer {
     ///
     /// `None` keeps the shairport-sync-style transient profile, using the fixed
     /// transient PIN 3939. `Some(pin)` requires normal M1-M6 HomeKit pairing.
-    pub fn new(pin: Option<&str>) -> Result<Self, CryptoError> {
+    pub(crate) fn new(pin: Option<&str>) -> Result<Self, CryptoError> {
         let allow_transient = pin.is_none();
         let pin = pin.unwrap_or(TRANSIENT_PIN);
         let n = BigUint::parse_bytes(N_3072_HEX.as_bytes(), 16)
@@ -107,7 +107,7 @@ impl SrpServer {
     }
 
     /// Process M1 from client. Returns (salt, B) for M2 response.
-    pub fn process_m1(&mut self, data: &[u8]) -> Result<(), CryptoError> {
+    pub(crate) fn process_m1(&mut self, data: &[u8]) -> Result<(), CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
 
         let method = tlv
@@ -131,7 +131,7 @@ impl SrpServer {
     }
 
     /// Build M2 response: State=2, Salt, PublicKey(B).
-    pub fn build_m2(&self) -> Vec<u8> {
+    pub(crate) fn build_m2(&self) -> Vec<u8> {
         let mut tlv = TlvValues::new();
         tlv.add(TlvType::State as u8, &[2]);
         tlv.add(TlvType::Salt as u8, &self.salt);
@@ -141,7 +141,7 @@ impl SrpServer {
     }
 
     /// Process M3 from client (PublicKey=A, Proof=M1). Returns true if auth succeeded.
-    pub fn process_m3(&mut self, data: &[u8]) -> Result<bool, CryptoError> {
+    pub(crate) fn process_m3(&mut self, data: &[u8]) -> Result<bool, CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
 
         let pk_bytes = tlv
@@ -199,7 +199,7 @@ impl SrpServer {
 
     /// Build M4 response: State=4, Proof(M2).
     /// For transient pairing, this completes the handshake.
-    pub fn build_m4(&self) -> Result<Vec<u8>, CryptoError> {
+    pub(crate) fn build_m4(&self) -> Result<Vec<u8>, CryptoError> {
         if !self.verified {
             // Return auth error TLV
             let mut tlv = TlvValues::new();
@@ -215,7 +215,7 @@ impl SrpServer {
     }
 
     /// Returns the shared secret (SRP session key) after successful transient pairing.
-    pub fn shared_secret(&self) -> Option<&[u8]> {
+    pub(crate) fn shared_secret(&self) -> Option<&[u8]> {
         if self.verified && self.is_transient {
             Some(&self.session_key)
         } else {
@@ -224,16 +224,8 @@ impl SrpServer {
     }
 
     /// Whether this is a transient (PIN-less) pairing session.
-    pub fn is_transient(&self) -> bool {
+    pub(crate) fn is_transient(&self) -> bool {
         self.is_transient
-    }
-    /// Whether pair-verify completed successfully.
-    pub fn is_verified(&self) -> bool {
-        self.verified
-    }
-    /// Returns the derived session key (only available after successful pair-verify).
-    pub fn session_key(&self) -> Option<&[u8]> {
-        if self.verified { Some(&self.session_key) } else { None }
     }
 }
 
@@ -401,7 +393,7 @@ fn make_nonce(tag: &[u8]) -> [u8; 12] {
 impl SrpServer {
     /// Process M5 from client: encrypted TLV with device identifier, Ed25519 signature, public key.
     /// Returns (identifier, Ed25519 public key) for persistent storage.
-    pub fn process_m5(&mut self, data: &[u8]) -> Result<(String, [u8; 32]), CryptoError> {
+    pub(crate) fn process_m5(&mut self, data: &[u8]) -> Result<(String, [u8; 32]), CryptoError> {
         if !self.verified {
             return Err(CryptoError::PairingHandshake(
                 "M5: pair-setup not verified (M3 must succeed first)".into(),
@@ -420,7 +412,7 @@ impl SrpServer {
     /// `device_id` is the public accessory identifier (placed in the TLV); the
     /// signature is produced with the secret long-term identity key built from
     /// `identity_seed`.
-    pub fn build_m6(&self, device_id: &str, identity_seed: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
+    pub(crate) fn build_m6(&self, device_id: &str, identity_seed: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
         setup_build_accessory_identity(&self.session_key, device_id, identity_seed)
     }
 }
@@ -533,10 +525,10 @@ fn setup_build_accessory_identity(
 }
 
 /// Lookup function for resolving a client identifier to its stored Ed25519 public key.
-pub type PairingKeyLookup<'a> = Option<&'a dyn Fn(&str) -> Option<[u8; 32]>>;
+pub(crate) type PairingKeyLookup<'a> = Option<&'a dyn Fn(&str) -> Option<[u8; 32]>>;
 
 /// Build a HomeKit pairing error TLV for request handlers.
-pub fn pairing_error_response(state: u8) -> Vec<u8> {
+pub(crate) fn pairing_error_response(state: u8) -> Vec<u8> {
     let mut tlv = TlvValues::new();
     tlv.add(TlvType::State as u8, &[state]);
     tlv.add(TlvType::Error as u8, &[TLV_ERROR_AUTHENTICATION]);
@@ -546,7 +538,7 @@ pub fn pairing_error_response(state: u8) -> Vec<u8> {
 // --- Pair-Verify (server side) ---
 
 /// Server-side pair-verify using Curve25519 ECDH + Ed25519 signatures.
-pub struct PairVerifyServer {
+pub(crate) struct PairVerifyServer {
     device_id: String,
     server_sk: SigningKey,
     server_eph_sk: [u8; 32],
@@ -561,7 +553,7 @@ impl PairVerifyServer {
     ///
     /// `device_id` is the public accessory identifier; M2 is signed with the
     /// secret long-term identity key built from `identity_seed`.
-    pub fn new(device_id: &str, identity_seed: &[u8; 32]) -> Self {
+    pub(crate) fn new(device_id: &str, identity_seed: &[u8; 32]) -> Self {
         let (sk, _) = identity_keypair(identity_seed);
 
         // Generate ephemeral Curve25519 keypair
@@ -582,7 +574,7 @@ impl PairVerifyServer {
     }
 
     /// Process verify M1 from client (ephemeral public key). Returns M2 response.
-    pub fn process_m1_build_m2(&mut self, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    pub(crate) fn process_m1_build_m2(&mut self, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
         let client_pk = tlv
             .get_type(TlvType::PublicKey)
@@ -628,7 +620,11 @@ impl PairVerifyServer {
     /// `lookup` resolves a client identifier to its stored Ed25519 public key.
     /// If `lookup` is `None`, signature verification is skipped for transient sessions.
     /// If a lookup callback is provided, unknown clients fail verification.
-    pub fn process_m3_build_m4(&mut self, data: &[u8], lookup: PairingKeyLookup<'_>) -> Result<Vec<u8>, CryptoError> {
+    pub(crate) fn process_m3_build_m4(
+        &mut self,
+        data: &[u8],
+        lookup: PairingKeyLookup<'_>,
+    ) -> Result<Vec<u8>, CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
         let enc = tlv
             .get_type(TlvType::EncryptedData)
@@ -680,7 +676,7 @@ impl PairVerifyServer {
     }
 
     /// Returns the shared secret derived during pair-verify (for HKDF key derivation).
-    pub fn shared_secret(&self) -> Option<&[u8; 32]> {
+    pub(crate) fn shared_secret(&self) -> Option<&[u8; 32]> {
         if self.completed {
             Some(&self.shared_secret)
         } else {
@@ -693,7 +689,7 @@ impl PairVerifyServer {
     /// Exposed before M3 completes specifically for AP2 *video* key derivation,
     /// where it is hashed together with a FairPlay key. It is not authenticated on
     /// its own — never use it directly as a confidential key.
-    pub fn ecdh_shared_secret(&self) -> &[u8; 32] {
+    pub(crate) fn ecdh_shared_secret(&self) -> &[u8; 32] {
         &self.shared_secret
     }
 }
