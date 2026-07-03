@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.0](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.6.2...shairplay-v0.7.0) (2026-07-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codec:** the codec module (shairplay::codec::* via #[doc(hidden)]) is now crate-private.
+* **api:** items previously reachable via the #[doc(hidden)] module paths (crypto/proto/net internals, codec, raop plumbing) and the async DacpClient API are now crate-private. The documented public API is unchanged.
+
+### Features
+
+* **raop:** advertise PIN-required pairing mode ([1c2c205](https://github.com/metaneutrons/shairplay-rust/commit/1c2c205f0109b517daeac2a44c6adebb56b48f86))
+* **raop:** fast AP2 connect + clean session handoff ([#30](https://github.com/metaneutrons/shairplay-rust/issues/30)) ([229c1be](https://github.com/metaneutrons/shairplay-rust/commit/229c1beac8be1c990dae94960bae5ca465faf05b))
+
+
+### Bug Fixes
+
+* **example:** avoid panic on --name/--persist without a value ([#29](https://github.com/metaneutrons/shairplay-rust/issues/29)) ([f05e7c4](https://github.com/metaneutrons/shairplay-rust/commit/f05e7c405bf000b362f9c70d6dfbdc91678c66ff))
+* **raop:** acknowledge AP2 pair-pin-start ([53316c0](https://github.com/metaneutrons/shairplay-rust/commit/53316c0593912b62d4dee881b16b839407a244cc))
+
+
+### Code Refactoring
+
+* **api:** minimize public API surface to the curated set ([da08b47](https://github.com/metaneutrons/shairplay-rust/commit/da08b4748132fdf415cc1e5f844830ff2679b447))
+* **codec:** make the codec module crate-private ([49f8308](https://github.com/metaneutrons/shairplay-rust/commit/49f8308e1bb604018131fcb22be4e29473638fbd))
+
 ## [0.6.2](https://github.com/metaneutrons/shairplay-rust/compare/shairplay-v0.6.1...shairplay-v0.6.2) (2026-06-30)
 
 
