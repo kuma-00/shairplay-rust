@@ -5,11 +5,13 @@
 | Feature | Stream Type | Details |
 |---------|-------------|---------|
 | mDNS discovery | — | `_airplay._tcp` + `_raop._tcp`, `et=0,3,5` |
-| SRP-6a transient pairing | — | PIN 3939, automatic, no persistence |
-| Normal HomeKit pairing | — | Configurable PIN, PairingStore key persistence |
+| HomeKit pairing (persistent) | — | Configurable PIN, PairingStore key persistence — **default** in the example |
+| SRP-6a transient pairing | — | PIN 3939, automatic, no persistence — example opt-in via `--transient` |
+| Paired-state statusFlags | — | Advertises `sf` = 0x004 transient / 0x204 PIN-unpaired / 0x604 PIN-paired, gated by `has_any_pairing()` so paired controllers reconnect via pair-verify |
+| Session handoff | — | A new audio SETUP stops the previous session (`set_active_audio`), so playback never lingers after a disconnect/switch |
 | Encrypted RTSP transport | — | ChaCha20-Poly1305, HKDF-SHA512 key derivation |
 | FairPlay handshake | — | Full fp-setup M1/M2 |
-| PTP timing | — | ⚠ Client implemented but **not wired** to playout — see [Open / Unwired](#open--unwired--scaffolding-present-not-connected) |
+| PTP timing | — | ⚠ Listener now runs (binds + drains 319/320 to kill the connect stall); offsets still **not wired** to playout — see [Open / Unwired](#open--unwired--scaffolding-present-not-connected) |
 | Buffered audio | 103 | AAC decode (symphonia), per-packet ChaCha20 decrypt |
 | Multichannel | 103 | 5.1/7.1 AAC → stereo mixdown (ITU-R BS.775) |
 | Resampling | 103 | rubato StreamResampler, any rate → output rate |
@@ -28,12 +30,16 @@ do **not** delete them as "dead code"; they are unfinished AP2 capabilities.
 
 - **PTP timing → real clock sync / multi-room** — `src/net/ptp.rs` is a complete
   IEEE-1588 / Apple-aPTP client (Sync/Follow_Up/Announce parsing, `OffsetSmoother`,
-  `PtpAnchor`) but is **not connected to playout**. The receiver advertises
-  `timingPeerInfo` (PTP) in SETUP yet plays out on best-effort local timing, so there
-  is **no true clock sync and no multi-room sync**. To wire: run the PTP UDP listener
-  (ports 319/320 — needs root / `CAP_NET_BIND_SERVICE`), feed offsets into `PtpClock`,
-  and schedule buffered/realtime playout via `PtpAnchor::delay_until_playout` instead
-  of immediate delivery.
+  `PtpAnchor`). As of the fast-connect work a **PTP sink now runs**: `spawn_ptp_sink()`
+  binds and drains ports 319/320 (IPv6-unspecified) so the sender no longer stalls on
+  ICMP port-unreachable — this is purely the connect-latency fix and can be disabled
+  with `SHAIRPLAY_NO_PTP`. What is still **not connected to playout** is the timing
+  itself: parsed offsets are dropped, not fed into `PtpClock`, so the receiver plays
+  out on best-effort local timing and there is **no true clock sync and no multi-room
+  sync**. To finish wiring: feed the drained Sync/Follow_Up offsets into `PtpClock` and
+  schedule buffered/realtime playout via `PtpAnchor::delay_until_playout` instead of
+  immediate delivery. (Ports 319/320 need root / `CAP_NET_BIND_SERVICE`; the sink is
+  IPv6-only today.)
 
 - **Outbound event reporting** — the encrypted event channel is established and the
   initial `updateInfo` is pushed at SETUP, but the receiver never sends events
@@ -156,6 +162,30 @@ is a potential future experiment.
 
 ## Known Issues (Resolved)
 
+### AP2 audio connect 5–11s → ~0.5s — FULLY RESOLVED ✅
+
+Starting an AP2 audio session (and switching receivers mid-playback) took 5–11
+seconds versus near-instant on a real Apple TV. Root-caused to four independent
+causes, all fixed:
+
+1. **PTP ICMP stall.** Nothing bound the PTP ports, so every timing packet from
+   the sender drew an ICMP port-unreachable and the sender backed off. Fixed by
+   `spawn_ptp_sink()` binding + draining 319/320 (see [Open / Unwired](#open--unwired--scaffolding-present-not-connected)).
+2. **statusFlags nudged paired controllers back into setup.** The `sf` value did
+   not reflect paired state, so iOS re-probed pair-setup on reconnect. Fixed with
+   `ap2_status_flags()`: 0x004 transient / 0x204 PIN-unpaired / **0x604 PIN-paired**
+   (keep `OneTimePairingRequired` bit 9 **and** add `DeviceSetupForHKAccessControl`
+   bit 10 once paired — matches a real Apple TV's `0x18644`), gated by
+   `PairingStore::has_any_pairing()`. **Do not guess flag bit names — this was
+   pulled from real-device mDNS (`dns-sd -Z _airplay._tcp local.`).**
+3. **Transient pairing was the default.** Transient sessions are untrusted, so iOS
+   waited out an ~11s remote-control timeout before falling back. The example now
+   defaults to **persistent** pairing (`--transient` to opt out).
+4. **Overlapping sessions on switch.** A new SETUP left the previous audio session
+   running (audio kept playing after disconnect and the new one connected slowly).
+   Fixed with `RaopShared::set_active_audio()`, which stops the prior session when
+   the next one starts.
+
 ### RC Connection Delay (~10s) — FULLY RESOLVED ✅
 
 Previously, the iPhone opened a "Remote Control Only" RTSP connection ~10 seconds before starting the audio connection. 
@@ -176,7 +206,7 @@ See previous sections for full remote control research (unchanged).
 
 ## Test Coverage
 
-130 tests, 17 C-verified vectors from pair_ap reference implementation:
+175 tests, 17 C-verified vectors from pair_ap reference implementation:
 - TLV codec, HKDF-SHA512, ChaCha20 transport framing
 - ADTS framing, audio packet decryption, server keypair
 - Anchor time calculation, channel mixdown, SSRC mapping
