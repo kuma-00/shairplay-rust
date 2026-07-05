@@ -34,12 +34,15 @@ do **not** delete them as "dead code"; they are unfinished AP2 capabilities.
   binds and drains ports 319/320 (IPv6-unspecified) so the sender no longer stalls on
   ICMP port-unreachable — this is purely the connect-latency fix and can be disabled
   with `SHAIRPLAY_NO_PTP`. What is still **not connected to playout** is the timing
-  itself: parsed offsets are dropped, not fed into `PtpClock`, so the receiver plays
-  out on best-effort local timing and there is **no true clock sync and no multi-room
-  sync**. To finish wiring: feed the drained Sync/Follow_Up offsets into `PtpClock` and
-  schedule buffered/realtime playout via `PtpAnchor::delay_until_playout` instead of
-  immediate delivery. (Ports 319/320 need root / `CAP_NET_BIND_SERVICE`; the sink is
-  IPv6-only today.)
+  itself: the parsed Follow_Up/Announce timestamps are only logged (`debug`) — no
+  offset is computed and `PtpClock`/`OffsetSmoother` stay unused — so the receiver
+  plays out on best-effort local timing and there is **no true clock sync and no
+  multi-room sync**. To finish wiring: compute offsets from the drained Sync/Follow_Up
+  stream, feed them into `PtpClock`, and schedule buffered/realtime playout via
+  `PtpAnchor::delay_until_playout` instead of immediate delivery. (Binding 319/320 may
+  need root / `CAP_NET_BIND_SERVICE`, esp. on Linux; the bind is best-effort and
+  degrades gracefully — a failed bind just logs one line and leaves the slow-connect
+  behaviour. The sink is IPv6-only today.)
 
 - **Outbound event reporting** — the encrypted event channel is established and the
   initial `updateInfo` is pushed at SETUP, but the receiver never sends events
