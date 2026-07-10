@@ -118,6 +118,8 @@ pub struct RaopBuffer {
     entries: Vec<BufferEntry>,
     /// Number of f32 samples in one decoded audio frame.
     audio_buffer_size: usize,
+    packets_seen: u64,
+    decode_failures: u64,
 }
 
 impl RaopBuffer {
@@ -166,6 +168,8 @@ impl RaopBuffer {
             last_seqnum: 0,
             entries,
             audio_buffer_size,
+            packets_seen: 0,
+            decode_failures: 0,
         })
     }
 
@@ -180,6 +184,7 @@ impl RaopBuffer {
     /// If the sequence number is far ahead of the current window, the buffer is
     /// flushed to avoid stalling on lost packets.
     pub fn queue(&mut self, data: &[u8], use_seqnum: bool) -> i32 {
+        self.packets_seen = self.packets_seen.saturating_add(1);
         let datalen = data.len();
         if !(12..=RAOP_PACKET_LEN).contains(&datalen) {
             return -1;
@@ -238,6 +243,17 @@ impl RaopBuffer {
         }))
         .unwrap_or(0);
         if output_size == 0 {
+            self.decode_failures = self.decode_failures.saturating_add(1);
+            if self.decode_failures <= 5 || self.decode_failures.is_multiple_of(100) {
+                tracing::warn!(
+                    packets_seen = self.packets_seen,
+                    decode_failures = self.decode_failures,
+                    payload_len = payload.len(),
+                    encrypted_len,
+                    seqnum,
+                    "Legacy ALAC frame decode failed"
+                );
+            }
             return 0;
         }
         let num_samples = output_size / 2;
@@ -246,6 +262,19 @@ impl RaopBuffer {
             self.entries[idx].audio_buffer[i] = s as f32 / 32768.0;
         }
         self.entries[idx].audio_buffer_len = num_samples;
+        if self.packets_seen <= 5 || self.packets_seen.is_multiple_of(500) {
+            let peak = self.entries[idx].audio_buffer[..num_samples]
+                .iter()
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            tracing::info!(
+                packets_seen = self.packets_seen,
+                decode_failures = self.decode_failures,
+                num_samples,
+                peak,
+                seqnum,
+                "Legacy ALAC frame decoded"
+            );
+        }
 
         // Update buffer window.
         if self.is_empty {
