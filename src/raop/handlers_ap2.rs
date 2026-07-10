@@ -563,6 +563,21 @@ fn setup_stream_realtime(
         .get("audioFormat")
         .and_then(|v| v.as_unsigned_integer())
         .unwrap_or(0) as u32;
+    let using_screen = stream0.get("usingScreen").and_then(|v| v.as_boolean()).unwrap_or(false);
+    let redundant_audio = stream0
+        .get("redundantAudio")
+        .and_then(|v| v.as_boolean())
+        .unwrap_or(false);
+    let content_type = stream0.get("ct").and_then(|v| v.as_unsigned_integer());
+    tracing::info!(
+        using_screen,
+        redundant_audio,
+        content_type,
+        audio_format = format_args!("{audio_format:#010x}"),
+        sample_rate = sr,
+        samples_per_frame = spf,
+        "Realtime audio stream parameters"
+    );
     let alac_format = AlacFormat::from_audio_format(audio_format).unwrap_or(AlacFormat {
         sample_rate: sr as u32,
         bit_depth: 16,

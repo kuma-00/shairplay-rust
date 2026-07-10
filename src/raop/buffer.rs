@@ -269,6 +269,8 @@ impl RaopBuffer {
             tracing::info!(
                 packets_seen = self.packets_seen,
                 decode_failures = self.decode_failures,
+                payload_len = payload.len(),
+                encrypted_len,
                 num_samples,
                 peak,
                 seqnum,
