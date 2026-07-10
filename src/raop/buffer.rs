@@ -7,6 +7,9 @@
 
 use crate::codec::alac::{AlacConfig, AlacDecoder};
 use aes::cipher::{BlockModeDecrypt, KeyIvInit};
+use xaac_rs::{
+    DecodeStatus, Decoder, DecoderConfig, DecoderTransport, ProfileHint, RawStreamConfig,
+};
 
 /// AES-128 key length in bytes.
 pub const RAOP_AESKEY_LEN: usize = 16;
@@ -18,6 +21,11 @@ pub(crate) const RAOP_PACKET_LEN: usize = 32768;
 const RAOP_BUFFER_LENGTH: usize = 32;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+
+enum RealtimeDecoder {
+    Alac(AlacDecoder),
+    AacEld(Decoder),
+}
 
 /// A single slot in the circular buffer holding one decoded audio frame.
 struct BufferEntry {
@@ -109,7 +117,7 @@ pub struct RaopBuffer {
     aeskey: [u8; RAOP_AESKEY_LEN],
     aesiv: [u8; RAOP_AESIV_LEN],
     alac_config: AlacConfig,
-    alac: AlacDecoder,
+    decoder: RealtimeDecoder,
     is_empty: bool,
     /// Sequence number of the next frame to dequeue (oldest buffered).
     first_seqnum: u16,
@@ -141,9 +149,26 @@ impl RaopBuffer {
             config.frame_length as usize * config.num_channels as usize * config.bit_depth as usize / 8;
         let audio_buffer_size = s16_buffer_size / 2; // num samples
 
-        let mut alac = AlacDecoder::new(config.bit_depth as i32, config.num_channels as i32);
-        let decoder_info = build_decoder_info(&config);
-        alac.set_info(&decoder_info);
+        let decoder = if _rtpmap.contains("AAC-ELD") {
+            let xaac_config = DecoderConfig {
+                transport: DecoderTransport::Raw,
+                pcm_word_size: 16,
+                raw: Some(RawStreamConfig {
+                    sample_rate: config.sample_rate,
+                    audio_object_type: ProfileHint::AacEld,
+                }),
+                max_channels: config.num_channels,
+                ld_frame_480: config.frame_length == 480,
+                disable_sync: true,
+                ..DecoderConfig::default()
+            };
+            RealtimeDecoder::AacEld(Decoder::new(xaac_config).ok()?)
+        } else {
+            let mut alac = AlacDecoder::new(config.bit_depth as i32, config.num_channels as i32);
+            let decoder_info = build_decoder_info(&config);
+            alac.set_info(&decoder_info);
+            RealtimeDecoder::Alac(alac)
+        };
 
         let entries = (0..RAOP_BUFFER_LENGTH)
             .map(|_| BufferEntry {
@@ -162,7 +187,7 @@ impl RaopBuffer {
             aeskey: *aes_key,
             aesiv: *aes_iv,
             alac_config: config,
-            alac,
+            decoder,
             is_empty: true,
             first_seqnum: 0,
             last_seqnum: 0,
@@ -236,13 +261,32 @@ impl RaopBuffer {
         }
         packet_buf[encrypted_len..].copy_from_slice(&payload[encrypted_len..]);
 
-        // ALAC decode → S16LE, then convert to f32 samples.
-        let mut s16_buf = vec![0u8; self.audio_buffer_size * 2];
-        let output_size = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.alac.decode_frame(&packet_buf, &mut s16_buf)
-        }))
-        .unwrap_or(0);
+        // Decode ALAC or raw AAC-ELD to S16LE, then convert to f32 samples.
+        let (s16_buf, output_size, codec_name) = match &mut self.decoder {
+            RealtimeDecoder::Alac(alac) => {
+                let mut output = vec![0u8; self.audio_buffer_size * 2];
+                let output_size = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    alac.decode_frame(&packet_buf, &mut output)
+                }))
+                .unwrap_or(0);
+                (output, output_size, "ALAC")
+            }
+            RealtimeDecoder::AacEld(decoder) => match decoder.decode_stream_chunk(&packet_buf) {
+                Ok(DecodeStatus::Frame(frame)) => {
+                    let output_size = frame.pcm.len();
+                    (frame.pcm, output_size, "AAC-ELD")
+                }
+                Ok(DecodeStatus::NeedMoreInput(_)) | Ok(DecodeStatus::EndOfStream) => {
+                    (Vec::new(), 0, "AAC-ELD")
+                }
+                Err(error) => {
+                    tracing::debug!(?error, seqnum, "AAC-ELD decode error");
+                    (Vec::new(), 0, "AAC-ELD")
+                }
+            },
+        };
         if output_size == 0 {
+            self.entries[idx].available = false;
             self.decode_failures = self.decode_failures.saturating_add(1);
             if self.decode_failures <= 5 || self.decode_failures.is_multiple_of(100) {
                 tracing::warn!(
@@ -251,12 +295,13 @@ impl RaopBuffer {
                     payload_len = payload.len(),
                     encrypted_len,
                     seqnum,
-                    "Legacy ALAC frame decode failed"
+                    codec = codec_name,
+                    "Legacy audio frame decode failed"
                 );
             }
             return 0;
         }
-        let num_samples = output_size / 2;
+        let num_samples = (output_size / 2).min(self.audio_buffer_size);
         for i in 0..num_samples {
             let s = i16::from_le_bytes([s16_buf[i * 2], s16_buf[i * 2 + 1]]);
             self.entries[idx].audio_buffer[i] = s as f32 / 32768.0;
@@ -274,7 +319,8 @@ impl RaopBuffer {
                 num_samples,
                 peak,
                 seqnum,
-                "Legacy ALAC frame decoded"
+                codec = codec_name,
+                "Legacy audio frame decoded"
             );
         }
 

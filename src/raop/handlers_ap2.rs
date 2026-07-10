@@ -631,7 +631,13 @@ fn setup_stream_realtime(
         // Legacy ALAC — only available with video feature (UxPlay-style features).
         #[cfg(feature = "video")]
         {
-            tracing::info!(stream_type = 96, sample_rate = sr, "Legacy ALAC (AES-CBC via ekey)");
+            let is_aac_eld = audio_format == 0x0100_0000;
+            tracing::info!(
+                stream_type = 96,
+                sample_rate = sr,
+                is_aac_eld,
+                "Legacy screen audio (AES-CBC via ekey)"
+            );
 
             let aes_key = conn.ekey.unwrap_or([0u8; 16]);
             let aes_iv = conn.eiv.unwrap_or([0u8; 16]);
@@ -641,7 +647,11 @@ fn setup_stream_realtime(
                 crate::raop::rtp::RtpConfig {
                     remote: conn.remote_socket.ip().to_string(),
                     local_addr: local_ip_from(conn),
-                    rtpmap: "96 AppleLossless".to_string(),
+                    rtpmap: if is_aac_eld {
+                        "96 MPEG4-GENERIC/AAC-ELD".to_string()
+                    } else {
+                        "96 AppleLossless".to_string()
+                    },
                     fmtp,
                     aes_key,
                     aes_iv,
