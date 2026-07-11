@@ -192,6 +192,7 @@ pub(crate) fn handle_info(
 
     let hw = crate::util::hwaddr_airplay(&conn.shared.hwaddr);
 
+    let profile = config::receiver_profile();
     let mut dict = plist::Dictionary::new();
     dict.insert("deviceID".into(), plist::Value::String(hw.clone()));
     dict.insert("macAddress".into(), plist::Value::String(hw));
@@ -200,15 +201,18 @@ pub(crate) fn handle_info(
     dict.insert(
         "features".into(),
         plist::Value::Integer(
-            (crate::net::features::receiver_features_for_pairing(conn.shared.pin.is_some()) as i64).into(),
+            (config::advertised_features(crate::net::features::receiver_features_for_pairing(
+                conn.shared.pin.is_some(),
+            )) as i64)
+                .into(),
         ),
     );
-    dict.insert("model".into(), plist::Value::String(config::GLOBAL_MODEL.into()));
+    dict.insert("model".into(), plist::Value::String(profile.model.into()));
     dict.insert(
         "protocolVersion".into(),
         plist::Value::String(config::AP2_PROTOVERS.into()),
     );
-    dict.insert("sourceVersion".into(), plist::Value::String(config::AP2_SRCVERS.into()));
+    dict.insert("sourceVersion".into(), plist::Value::String(profile.srcvers.into()));
     dict.insert(
         "statusFlags".into(),
         plist::Value::Integer(
@@ -221,25 +225,54 @@ pub(crate) fn handle_info(
     // Video: advertise a display so the iPhone offers screen mirroring
     #[cfg(feature = "video")]
     if conn.shared.video_handler.is_some() {
-        let display = plist::Dictionary::from_iter([
-            (
-                "widthPixels".to_string(),
-                plist::Value::Integer(config::MIRRORING_WIDTH.into()),
-            ),
-            (
-                "heightPixels".to_string(),
-                plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
-            ),
-            ("uuid".to_string(), plist::Value::String(config::MIRRORING_UUID.into())),
-            (
-                "maxFPS".to_string(),
-                plist::Value::Integer(config::MIRRORING_FPS.into()),
-            ),
-            (
-                "features".to_string(),
-                plist::Value::Integer(config::MIRRORING_FEATURES.into()),
-            ),
-        ]);
+        let display = if profile.airserver_display {
+            let edid = hex::decode(config::AIRSERVER_EDID_HEX).ok()?;
+            plist::Dictionary::from_iter([
+                ("edid".to_string(), plist::Value::Data(edid)),
+                ("features".to_string(), plist::Value::Integer(30_i64.into())),
+                (
+                    "height".to_string(),
+                    plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
+                ),
+                ("heightPhysical".to_string(), plist::Value::Integer(0_i64.into())),
+                (
+                    "heightPixels".to_string(),
+                    plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
+                ),
+                ("overscanned".to_string(), plist::Value::Boolean(false)),
+                ("rotation".to_string(), plist::Value::Boolean(true)),
+                ("uuid".to_string(), plist::Value::String(conn.shared.pairing_id.clone())),
+                (
+                    "width".to_string(),
+                    plist::Value::Integer(config::MIRRORING_WIDTH.into()),
+                ),
+                ("widthPhysical".to_string(), plist::Value::Integer(0_i64.into())),
+                (
+                    "widthPixels".to_string(),
+                    plist::Value::Integer(config::MIRRORING_WIDTH.into()),
+                ),
+            ])
+        } else {
+            plist::Dictionary::from_iter([
+                (
+                    "widthPixels".to_string(),
+                    plist::Value::Integer(config::MIRRORING_WIDTH.into()),
+                ),
+                (
+                    "heightPixels".to_string(),
+                    plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
+                ),
+                ("uuid".to_string(), plist::Value::String(config::MIRRORING_UUID.into())),
+                (
+                    "maxFPS".to_string(),
+                    plist::Value::Integer(config::MIRRORING_FPS.into()),
+                ),
+                (
+                    "features".to_string(),
+                    plist::Value::Integer(config::MIRRORING_FEATURES.into()),
+                ),
+            ])
+        };
         dict.insert(
             "displays".into(),
             plist::Value::Array(vec![plist::Value::Dictionary(display)]),
@@ -270,6 +303,7 @@ pub(crate) fn handle_pair_pin_start(
 fn build_update_info_message(requires_pin_pairing: bool, already_paired: bool) -> Option<Vec<u8>> {
     use crate::raop::config;
 
+    let profile = config::receiver_profile();
     let mut update_info = plist::Dictionary::new();
     update_info.insert("type".into(), plist::Value::String("updateInfo".into()));
     let mut value = plist::Dictionary::new();
@@ -280,11 +314,14 @@ fn build_update_info_message(requires_pin_pairing: bool, already_paired: bool) -
     value.insert(
         "features".into(),
         plist::Value::Integer(
-            (crate::net::features::receiver_features_for_pairing(requires_pin_pairing) as i64).into(),
+            (config::advertised_features(crate::net::features::receiver_features_for_pairing(
+                requires_pin_pairing,
+            )) as i64)
+                .into(),
         ),
     );
-    value.insert("model".into(), plist::Value::String(config::GLOBAL_MODEL.into()));
-    value.insert("sourceVersion".into(), plist::Value::String(config::AP2_SRCVERS.into()));
+    value.insert("model".into(), plist::Value::String(profile.model.into()));
+    value.insert("sourceVersion".into(), plist::Value::String(profile.srcvers.into()));
     value.insert(
         "protocolVersion".into(),
         plist::Value::String(config::AP2_PROTOVERS.into()),

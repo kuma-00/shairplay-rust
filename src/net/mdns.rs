@@ -51,9 +51,6 @@ pub(crate) const GLOBAL_VERSION: &str = "130.14";
 
 // --- AP2 mDNS TXT record constants ---
 
-/// Source version string.
-#[cfg(feature = "ap2")]
-pub(crate) const AP2_SRCVERS: &str = crate::raop::config::AP2_SRCVERS;
 /// OS version string.
 #[cfg(feature = "ap2")]
 pub(crate) const AP2_OSVERS: &str = "15.6";
@@ -137,7 +134,10 @@ impl AirPlayServiceInfo {
         let hw_airplay = util::hwaddr_airplay(hwaddr);
         let raop_name = format!("{hw_raop}@{name}");
 
-        let features = super::features::receiver_features_for_pairing(requires_pin_pairing);
+        let profile = crate::raop::config::receiver_profile();
+        let features = crate::raop::config::advertised_features(super::features::receiver_features_for_pairing(
+            requires_pin_pairing,
+        ));
         let features_lo = features & 0xFFFFFFFF;
         let features_hi = (features >> 32) & 0xFFFFFFFF;
         let ft = format!("0x{features_lo:X},0x{features_hi:X}");
@@ -154,11 +154,11 @@ impl AirPlayServiceInfo {
             ("fv".into(), AP2_FW_VERSION.into()),
             ("sf".into(), format!("0x{status_flags:X}")),
             ("md".into(), RAOP_MD.into()),
-            ("am".into(), GLOBAL_MODEL.into()),
+            ("am".into(), profile.model.into()),
             ("pk".into(), pk_hex.into()),
             ("tp".into(), RAOP_TP.into()), // TCP for AP1 fallback, UDP for AP2
             ("vn".into(), RAOP_AP2_VN.into()),
-            ("vs".into(), AP2_SRCVERS.into()),
+            ("vs".into(), profile.srcvers.into()),
             ("ov".into(), AP2_OSVERS.into()),
         ];
 
@@ -171,11 +171,11 @@ impl AirPlayServiceInfo {
             ("gid".into(), pi.into()),
             ("igl".into(), "0".into()),
             ("gcgl".into(), "0".into()),
-            ("model".into(), GLOBAL_MODEL.into()),
+            ("model".into(), profile.model.into()),
             ("protovers".into(), AP2_PROTOVERS.into()),
             ("pi".into(), pi.into()),
             ("pk".into(), pk_hex.into()),
-            ("srcvers".into(), AP2_SRCVERS.into()),
+            ("srcvers".into(), profile.srcvers.into()),
             ("osvers".into(), AP2_OSVERS.into()),
             ("vv".into(), "2".into()),
             ("fv".into(), AP2_FW_VERSION.into()),

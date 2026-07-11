@@ -317,6 +317,17 @@ impl RaopServer {
         // stall the buffered-audio start. No-op if the ports can't be bound.
         #[cfg(feature = "ap2")]
         if self.mode == AirPlayMode::AirPlay2 {
+            let profile = crate::raop::config::receiver_profile();
+            let features = crate::raop::config::advertised_features(
+                crate::net::features::receiver_features_for_pairing(self.shared.pin.is_some()),
+            );
+            tracing::info!(
+                receiver_profile = profile.name,
+                model = profile.model,
+                srcvers = profile.srcvers,
+                feature_mask = format_args!("0x{:X},0x{:X}", features & 0xffff_ffff, features >> 32),
+                "AirPlay receiver advertisement profile"
+            );
             crate::net::ptp::spawn_ptp_sink().await;
         }
 
