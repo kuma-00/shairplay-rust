@@ -374,7 +374,9 @@ pub(crate) fn handle_set_parameter(
 ) -> Option<Vec<u8>> {
     let content_type = request.header("Content-Type")?;
     let data = request.data()?;
-    tracing::debug!(content_type, len = data.len(), "SET_PARAMETER");
+    if content_type != "text/parameters" {
+        tracing::debug!(content_type, len = data.len(), "SET_PARAMETER");
+    }
 
     // Volume, progress, cover art, and DMAP metadata are delivered straight to the
     // AudioHandler (never blocking the audio pipeline). This dispatch is identical

@@ -7,6 +7,8 @@
 
 use crate::codec::alac::{AlacConfig, AlacDecoder};
 use aes::cipher::{BlockModeDecrypt, KeyIvInit};
+use std::fs::File;
+use std::io::Write;
 use xaac_rs::{DecodeStatus, Decoder, DecoderConfig, DecoderTransport, ProfileHint, RawStreamConfig};
 
 /// AES-128 key length in bytes.
@@ -144,6 +146,7 @@ pub struct RaopBuffer {
     audio_buffer_size: usize,
     packets_seen: u64,
     decode_failures: u64,
+    aac_capture: Option<(File, u8)>,
 }
 
 impl RaopBuffer {
@@ -207,6 +210,20 @@ impl RaopBuffer {
             })
             .collect();
 
+        let aac_capture = if matches!(decoder, RealtimeDecoder::AacEld(..)) {
+            let path = std::env::temp_dir().join("windows_airplay_server_aac_eld.bin");
+            let capture = File::create(&path).ok().map(|mut file| {
+                // Simple capture format: magic, ASC length/data, followed by
+                // repeated big-endian u32 access-unit length and bytes.
+                let _ = file.write_all(b"AACELD01\0\0\0\x04\xf8\xe8\x50\x00");
+                tracing::info!(path = %path.display(), "Capturing first AAC-ELD access units");
+                (file, 32)
+            });
+            capture
+        } else {
+            None
+        };
+
         Some(Self {
             aeskey: *aes_key,
             aesiv: *aes_iv,
@@ -219,6 +236,7 @@ impl RaopBuffer {
             audio_buffer_size,
             packets_seen: 0,
             decode_failures: 0,
+            aac_capture,
         })
     }
 
@@ -289,6 +307,19 @@ impl RaopBuffer {
             packet_buf[..encrypted_len].copy_from_slice(&encrypted);
         }
         packet_buf[encrypted_len..].copy_from_slice(&payload[encrypted_len..]);
+
+        if let Some((file, remaining)) = self.aac_capture.as_mut().filter(|(_, remaining)| *remaining > 0) {
+            let len = (packet_buf.len() as u32).to_be_bytes();
+            if file.write_all(&len).and_then(|_| file.write_all(&packet_buf)).is_ok() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    let _ = file.flush();
+                    tracing::info!("AAC-ELD diagnostic capture complete");
+                }
+            } else {
+                *remaining = 0;
+            }
+        }
 
         if matches!(self.decoder, RealtimeDecoder::AacEld(..))
             && !matches!(packet_buf.first(), Some(0x8c | 0x8d | 0x8e | 0x80 | 0x81 | 0x82))

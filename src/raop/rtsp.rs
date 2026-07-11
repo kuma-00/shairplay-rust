@@ -306,7 +306,29 @@ fn handle_flush_inline(conn: &mut RaopConnection, request: &HttpRequest) {
 }
 
 /// TEARDOWN: stop RTP, stop buffered audio, close connection.
-fn handle_teardown(conn: &mut RaopConnection, _request: &HttpRequest, response: &mut HttpResponse) -> Option<Vec<u8>> {
+fn handle_teardown(conn: &mut RaopConnection, request: &HttpRequest, response: &mut HttpResponse) -> Option<Vec<u8>> {
+    #[cfg(feature = "ap2")]
+    if let Some(data) = request.data()
+        && let Ok(value) = plist::from_bytes::<plist::Value>(data)
+        && let Some(streams) = value
+            .as_dictionary()
+            .and_then(|dict| dict.get("streams"))
+            .and_then(plist::Value::as_array)
+    {
+        let types = streams
+            .iter()
+            .filter_map(plist::Value::as_dictionary)
+            .filter_map(|stream| stream.get("type"))
+            .filter_map(plist::Value::as_unsigned_integer)
+            .collect::<Vec<_>>();
+        if !types.is_empty() && types.iter().all(|stream_type| *stream_type == 96) {
+            if let Some(mut rtp) = conn.raop_rtp.take() {
+                rtp.stop();
+            }
+            tracing::info!(?types, "Audio-only TEARDOWN; keeping mirroring session");
+            return None;
+        }
+    }
     response.add_header("Connection", "close");
     response.set_disconnect(true);
     if let Some(mut rtp) = conn.raop_rtp.take() {
