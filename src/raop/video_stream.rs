@@ -3,7 +3,7 @@
 //! Accepts a TCP connection, reads 128-byte headers + variable-length payloads,
 //! classifies packets, decrypts Payload types, and delivers to VideoSession.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use tokio::io::AsyncReadExt;
@@ -47,6 +47,7 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
                 break;
             }
         }
+        let header_received_at = Instant::now();
 
         // Parse header fields (little-endian)
         let payload_len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
@@ -76,6 +77,7 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
                 break;
             }
         }
+        let payload_received_at = Instant::now();
 
         // Classify packet
         let kind = match packet_type {
@@ -95,12 +97,16 @@ async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Bo
         if matches!(kind, PacketKind::Payload) {
             cipher.decrypt(&mut payload);
         }
+        let decrypted_at = Instant::now();
 
         trace!(?kind, timestamp, payload_len, "Video packet");
         session.on_video(VideoPacket {
             kind,
             timestamp,
             payload: payload.freeze(),
+            header_received_at,
+            payload_received_at,
+            decrypted_at,
         });
     }
     session.on_video_end();

@@ -5,6 +5,7 @@
 //! The application is responsible for decoding and rendering.
 
 use bytes::Bytes;
+use std::time::Instant;
 
 /// Classification of a video packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,12 @@ pub struct VideoPacket {
     pub timestamp: u64,
     /// Packet payload (raw NAL units for Payload, config bytes for AvcC/HvcC).
     pub payload: Bytes,
+    /// Monotonic time after the complete 128-byte TCP header was read.
+    pub header_received_at: Instant,
+    /// Monotonic time after the complete TCP payload was assembled.
+    pub payload_received_at: Instant,
+    /// Monotonic time after payload decryption (or classification for plaintext packets).
+    pub decrypted_at: Instant,
 }
 
 /// Factory for creating video sessions. Implement this to receive video data.

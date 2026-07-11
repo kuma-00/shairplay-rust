@@ -774,7 +774,19 @@ fn setup_stream_video(
         .get("streamConnectionID")
         .and_then(|v| v.as_signed_integer())
         .unwrap_or(0) as u64;
-    tracing::info!(stream_type = 110, stream_connection_id, "AP2 video stream setup");
+    let latency_ms_unsigned = stream0.get("latencyMs").and_then(plist::Value::as_unsigned_integer);
+    let latency_ms_signed = stream0.get("latencyMs").and_then(plist::Value::as_signed_integer);
+    let latency_ms_real = stream0.get("latencyMs").and_then(plist::Value::as_real);
+    let timestamp_info = stream0.get("timestampInfo");
+    tracing::info!(
+        stream_type = 110,
+        stream_connection_id,
+        latency_ms_unsigned,
+        latency_ms_signed,
+        latency_ms_real,
+        timestamp_info = ?timestamp_info,
+        "AP2 video stream setup"
+    );
 
     // Seed is either the audio AES key directly (Stage-3) or
     // eaesKey = SHA-512(fairplay_key ‖ ecdh) (full FairPlay + ECDH path).
