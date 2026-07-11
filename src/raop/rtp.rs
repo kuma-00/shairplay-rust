@@ -227,7 +227,7 @@ impl RaopRtp {
                 codec: AudioCodec::Pcm,
                 bits: 32,
                 channels: config.num_channels,
-                sample_rate: config.sample_rate,
+                sample_rate: self.output_sample_rate.unwrap_or(config.sample_rate),
             });
 
             #[cfg(feature = "resample")]

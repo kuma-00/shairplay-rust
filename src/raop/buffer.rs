@@ -7,9 +7,7 @@
 
 use crate::codec::alac::{AlacConfig, AlacDecoder};
 use aes::cipher::{BlockModeDecrypt, KeyIvInit};
-use xaac_rs::{
-    DecodeStatus, Decoder, DecoderConfig, DecoderTransport, ProfileHint, RawStreamConfig,
-};
+use xaac_rs::{DecodeStatus, Decoder, DecoderConfig, DecoderTransport, ProfileHint, RawStreamConfig};
 
 /// AES-128 key length in bytes.
 pub const RAOP_AESKEY_LEN: usize = 16;
@@ -27,8 +25,26 @@ enum RealtimeDecoder {
     AacEld(Decoder),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::RaopBuffer;
+
+    #[test]
+    fn initializes_airplay_aac_eld_from_separate_asc() {
+        let buffer = RaopBuffer::new(
+            "96 MPEG4-GENERIC/AAC-ELD",
+            "96 480 0 16 40 10 14 2 255 0 0 44100",
+            &[0; 16],
+            &[0; 16],
+        );
+        assert!(buffer.is_some());
+    }
+}
+
 /// A single slot in the circular buffer holding one decoded audio frame.
 struct BufferEntry {
+    /// Whether this RTP sequence number has already been processed.
+    seen: bool,
     /// Whether this slot contains a valid decoded frame.
     available: bool,
     /// RTP flags byte (first byte of RTP header).
@@ -151,7 +167,7 @@ impl RaopBuffer {
 
         let decoder = if _rtpmap.contains("AAC-ELD") {
             let xaac_config = DecoderConfig {
-                transport: DecoderTransport::Raw,
+                transport: DecoderTransport::Mp4Raw,
                 pcm_word_size: 16,
                 raw: Some(RawStreamConfig {
                     sample_rate: config.sample_rate,
@@ -160,9 +176,16 @@ impl RaopBuffer {
                 max_channels: config.num_channels,
                 ld_frame_480: config.frame_length == 480,
                 disable_sync: true,
+                error_concealment: false,
                 ..DecoderConfig::default()
             };
-            RealtimeDecoder::AacEld(Decoder::new(xaac_config).ok()?)
+            let mut decoder = Decoder::new(xaac_config).ok()?;
+            // AudioSpecificConfig is codec configuration, not part of an AAC
+            // access unit.  Feed it during MP4-raw initialization so the first
+            // RTP payload starts at the actual AAC-ELD element boundary.
+            const AAC_ELD_44K1_STEREO_ASC: [u8; 4] = [0xf8, 0xe8, 0x50, 0x00];
+            decoder.initialize_codec_config(&AAC_ELD_44K1_STEREO_ASC).ok()?;
+            RealtimeDecoder::AacEld(decoder)
         } else {
             let mut alac = AlacDecoder::new(config.bit_depth as i32, config.num_channels as i32);
             let decoder_info = build_decoder_info(&config);
@@ -172,6 +195,7 @@ impl RaopBuffer {
 
         let entries = (0..RAOP_BUFFER_LENGTH)
             .map(|_| BufferEntry {
+                seen: false,
                 available: false,
                 flags: 0,
                 entry_type: 0,
@@ -233,7 +257,7 @@ impl RaopBuffer {
 
         let idx = seqnum as usize % RAOP_BUFFER_LENGTH;
         // Skip exact duplicates.
-        if self.entries[idx].available && seqnum_cmp(self.entries[idx].seqnum, seqnum) == 0 {
+        if self.entries[idx].seen && seqnum_cmp(self.entries[idx].seqnum, seqnum) == 0 {
             return 0;
         }
 
@@ -241,6 +265,7 @@ impl RaopBuffer {
         self.entries[idx].flags = data[0];
         self.entries[idx].entry_type = data[1];
         self.entries[idx].seqnum = seqnum;
+        self.entries[idx].seen = true;
         self.entries[idx].timestamp = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         self.entries[idx].ssrc = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         self.entries[idx].available = true;
@@ -248,6 +273,10 @@ impl RaopBuffer {
         // AES-128-CBC decrypt: only full 16-byte blocks are encrypted,
         // trailing bytes (< 16) are sent in the clear.
         let payload = &data[12..];
+        if payload == [0x00, 0x68, 0x34, 0x00] {
+            self.entries[idx].available = false;
+            return 0;
+        }
         let encrypted_len = (payload.len() / 16) * 16;
         let mut packet_buf = vec![0u8; payload.len()];
 
@@ -261,6 +290,29 @@ impl RaopBuffer {
         }
         packet_buf[encrypted_len..].copy_from_slice(&payload[encrypted_len..]);
 
+        if matches!(self.decoder, RealtimeDecoder::AacEld(..))
+            && !matches!(packet_buf.first(), Some(0x8c | 0x8d | 0x8e | 0x80 | 0x81 | 0x82))
+        {
+            self.entries[idx].available = false;
+            self.decode_failures = self.decode_failures.saturating_add(1);
+            if self.decode_failures <= 5 || self.decode_failures.is_multiple_of(100) {
+                let prefix = packet_buf
+                    .iter()
+                    .take(8)
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join("");
+                tracing::warn!(
+                    seqnum,
+                    payload_len = payload.len(),
+                    encrypted_len,
+                    prefix,
+                    "Decrypted payload is not AAC-ELD"
+                );
+            }
+            return 0;
+        }
+
         // Decode ALAC or raw AAC-ELD to S16LE, then convert to f32 samples.
         let (s16_buf, output_size, codec_name) = match &mut self.decoder {
             RealtimeDecoder::Alac(alac) => {
@@ -271,16 +323,16 @@ impl RaopBuffer {
                 .unwrap_or(0);
                 (output, output_size, "ALAC")
             }
-            RealtimeDecoder::AacEld(decoder) => match decoder.decode_stream_chunk(&packet_buf) {
+            RealtimeDecoder::AacEld(decoder) => match decoder.decode_access_unit(&packet_buf) {
                 Ok(DecodeStatus::Frame(frame)) => {
                     let output_size = frame.pcm.len();
                     (frame.pcm, output_size, "AAC-ELD")
                 }
-                Ok(DecodeStatus::NeedMoreInput(_)) | Ok(DecodeStatus::EndOfStream) => {
-                    (Vec::new(), 0, "AAC-ELD")
-                }
+                Ok(DecodeStatus::NeedMoreInput(_)) | Ok(DecodeStatus::EndOfStream) => (Vec::new(), 0, "AAC-ELD"),
                 Err(error) => {
-                    tracing::debug!(?error, seqnum, "AAC-ELD decode error");
+                    if self.decode_failures < 5 || self.decode_failures.is_multiple_of(100) {
+                        tracing::debug!(?error, seqnum, "AAC-ELD decode error");
+                    }
                     (Vec::new(), 0, "AAC-ELD")
                 }
             },
