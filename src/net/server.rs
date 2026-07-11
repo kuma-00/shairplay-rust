@@ -243,8 +243,20 @@ async fn bind_listener(addr: IpAddr, start_port: u16, auto_port: bool) -> Result
 /// Generic over the byte stream (`AsyncRead + AsyncWrite`) so the framing/crypto
 /// state machine is decoupled from the socket and can be unit-tested against an
 /// in-memory duplex. The accept loop only accepts, permits, and spawns this.
+#[cfg(test)]
 async fn process_connection<S>(mut stream: S, mut handler: Box<dyn ConnectionHandler>, remote: SocketAddr)
 where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    process_connection_with_shutdown(&mut stream, &mut handler, remote, None).await;
+}
+
+async fn process_connection_with_shutdown<S>(
+    stream: &mut S,
+    handler: &mut Box<dyn ConnectionHandler>,
+    remote: SocketAddr,
+    mut shutdown_rx: Option<watch::Receiver<bool>>,
+) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut buf = [0u8; 4096];
@@ -278,13 +290,25 @@ where
             let leftover = request.take_leftover();
             request = HttpRequest::new();
             if !leftover.is_empty() && request.add_data(&leftover).is_err() {
-                write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
+                write_bad_request_and_close(stream, Some(handler.as_mut())).await;
                 return;
             }
         }
 
         // Read from network
-        let n = match stream.read(&mut buf).await {
+        let read_result = if let Some(shutdown) = shutdown_rx.as_mut() {
+            tokio::select! {
+                result = stream.read(&mut buf) => result,
+                _ = shutdown.changed() => {
+                    let _ = stream.shutdown().await;
+                    tracing::info!(%remote, "Connection closed by server");
+                    return;
+                }
+            }
+        } else {
+            stream.read(&mut buf).await
+        };
+        let n = match read_result {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
@@ -307,7 +331,7 @@ where
                         // (decrypted plaintext is intentionally NOT logged)
                         if request.add_data(&plain).is_err() {
                             tracing::warn!("HTTP parse error on decrypted data");
-                            write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
+                            write_bad_request_and_close(stream, Some(handler.as_mut())).await;
                             break;
                         }
                         tracing::trace!(
@@ -329,7 +353,7 @@ where
             tracing::trace!(encrypted = false, n, "Read (plaintext)");
             if request.add_data(&buf[..n]).is_err() {
                 tracing::warn!("HTTP parse error, first bytes: {:02x?}", &buf[..n.min(32)]);
-                write_bad_request_and_close(&mut stream, Some(handler.as_mut())).await;
+                write_bad_request_and_close(stream, Some(handler.as_mut())).await;
                 break;
             }
         }
@@ -361,13 +385,21 @@ fn spawn_accept_loop(
                         Err(_) => { tracing::warn!("Max connections reached"); continue; }
                     };
                     let cb = callbacks.clone();
+                    let connection_shutdown = shutdown_rx.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        let handler = match cb.conn_init(local, remote) {
+                        let mut handler = match cb.conn_init(local, remote) {
                             Some(h) => h,
                             None => return,
                         };
-                        process_connection(stream, handler, remote).await;
+                        let mut stream = stream;
+                        process_connection_with_shutdown(
+                            &mut stream,
+                            &mut handler,
+                            remote,
+                            Some(connection_shutdown),
+                        )
+                        .await;
                     });
                 }
                 _ = shutdown_rx.changed() => {
