@@ -21,7 +21,6 @@ pub(crate) struct ReceiverProfile {
     pub model: &'static str,
     pub srcvers: &'static str,
     pub feature_override: Option<u64>,
-    pub airserver_display: bool,
 }
 
 #[cfg(feature = "ap2")]
@@ -32,21 +31,18 @@ pub(crate) fn parse_receiver_profile(value: Option<&str>) -> ReceiverProfile {
             model: "AppleTV6,2",
             srcvers: "375.3",
             feature_override: None,
-            airserver_display: false,
         },
         Some("airserver-full") => ReceiverProfile {
             name: "airserver-full",
             model: "AppleTV6,2",
             srcvers: "375.3",
             feature_override: Some(0x0004_000A_527D_5FD1),
-            airserver_display: true,
         },
         _ => ReceiverProfile {
             name: "default",
             model: GLOBAL_MODEL,
             srcvers: AP2_SRCVERS,
             feature_override: None,
-            airserver_display: false,
         },
     }
 }
@@ -129,7 +125,6 @@ mod status_flag_tests {
         );
         let full = parse_receiver_profile(Some("airserver-full"));
         assert_eq!(full.feature_override, Some(0x0004_000A_527D_5FD1));
-        assert!(full.airserver_display);
         assert_eq!(parse_receiver_profile(Some("invalid")).name, "default");
     }
 }
@@ -156,13 +151,3 @@ pub(crate) const MIRRORING_UUID: &str = "shairplay_display";
 /// Display features bitmask advertised for screen mirroring.
 #[cfg(feature = "video")]
 pub(crate) const MIRRORING_FEATURES: i64 = 2;
-
-/// EDID observed from AirServer 2025.2.20.2's second GET /info response.
-/// Used only by the explicitly-selected `airserver-full` experiment.
-#[cfg(feature = "video")]
-pub(crate) const AIRSERVER_EDID_HEX: &str = concat!(
-    "00ffffffffffff004dd90100010000003017010380301b782e2795a55550a2270b",
-    "5054210800818081c08100a9c0b300d1c001010101023a801871382d40582c45",
-    "00dd0c1100001e000000ff0031323334353637380a20202020000000fd00324c1e",
-    "5311000a202020202020000000fc004169725365727665722055484400b8"
-);
