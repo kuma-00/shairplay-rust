@@ -2,10 +2,12 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, watch};
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::error::NetworkError;
 use crate::proto::http::{HttpRequest, HttpResponse};
@@ -47,6 +49,7 @@ async fn write_bad_request_and_close<S: AsyncWrite + Unpin>(
 /// ```
 /// Default RTSP listening port for AirPlay receivers.
 pub(crate) const DEFAULT_RTSP_PORT: u16 = 5000;
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct BindConfig {
@@ -132,6 +135,7 @@ pub(crate) struct HttpServer {
     callbacks: Arc<dyn HttpdCallbacks>,
     max_connections: usize,
     shutdown_tx: Option<watch::Sender<bool>>,
+    accept_tasks: Vec<JoinHandle<()>>,
     port: u16,
     running: bool,
     bind_config: BindConfig,
@@ -144,6 +148,7 @@ impl HttpServer {
             callbacks,
             max_connections,
             shutdown_tx: None,
+            accept_tasks: Vec::new(),
             port: 0,
             running: false,
             bind_config: BindConfig::default(),
@@ -193,12 +198,15 @@ impl HttpServer {
         let callbacks = self.callbacks.clone();
         let semaphore = Arc::new(Semaphore::new(self.max_connections));
 
-        for listener in listeners {
-            if let Ok(addr) = listener.local_addr() {
-                tracing::debug!(%addr, "Listener bound");
-            }
-            spawn_accept_loop(listener, callbacks.clone(), semaphore.clone(), shutdown_rx.clone());
-        }
+        self.accept_tasks = listeners
+            .into_iter()
+            .map(|listener| {
+                if let Ok(addr) = listener.local_addr() {
+                    tracing::debug!(%addr, "Listener bound");
+                }
+                spawn_accept_loop(listener, callbacks.clone(), semaphore.clone(), shutdown_rx.clone())
+            })
+            .collect();
 
         Ok(actual_port)
     }
@@ -213,12 +221,20 @@ impl HttpServer {
         self.port
     }
 
-    /// Stop the server and close all listeners.
+    /// Stop the server and wait until listeners and active connections have exited.
     pub(crate) async fn stop(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(true);
         }
         self.running = false;
+
+        for mut task in std::mem::take(&mut self.accept_tasks) {
+            if tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut task).await.is_err() {
+                tracing::warn!("RTSP accept loop did not stop in time; aborting it");
+                task.abort();
+                let _ = task.await;
+            }
+        }
     }
 }
 
@@ -366,8 +382,10 @@ fn spawn_accept_loop(
     callbacks: Arc<dyn HttpdCallbacks>,
     semaphore: Arc<Semaphore>,
     mut shutdown_rx: watch::Receiver<bool>,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut connections = JoinSet::new();
+
         loop {
             tokio::select! {
                 result = listener.accept() => {
@@ -386,7 +404,7 @@ fn spawn_accept_loop(
                     };
                     let cb = callbacks.clone();
                     let connection_shutdown = shutdown_rx.clone();
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         let _permit = permit;
                         let mut handler = match cb.conn_init(local, remote) {
                             Some(h) => h,
@@ -405,13 +423,27 @@ fn spawn_accept_loop(
                 _ = shutdown_rx.changed() => {
                     break;
                 }
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    if let Err(error) = result {
+                        tracing::debug!(%error, "RTSP connection task ended with an error");
+                    }
+                }
             }
         }
-    });
+
+        drop(listener);
+        while let Some(result) = connections.join_next().await {
+            if let Err(error) = result {
+                tracing::debug!(%error, "RTSP connection task ended with an error");
+            }
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     struct OkHandler {
@@ -425,6 +457,34 @@ mod tests {
             resp.finish(None);
             resp
         }
+    }
+
+    struct TestCallbacks;
+
+    impl HttpdCallbacks for TestCallbacks {
+        fn conn_init(self: Arc<Self>, _local: SocketAddr, _remote: SocketAddr) -> Option<Box<dyn ConnectionHandler>> {
+            Some(Box::new(OkHandler { disconnect: false }))
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_releases_listener_before_restart() {
+        let probe = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let mut server = HttpServer::new(Arc::new(TestCallbacks), 1);
+        server.set_bind_config(
+            BindConfig::new()
+                .addrs([IpAddr::V4(Ipv4Addr::LOCALHOST)])
+                .port(port)
+                .exact_port(),
+        );
+
+        assert_eq!(server.start(0).await.unwrap(), port);
+        server.stop().await;
+        assert_eq!(server.start(0).await.unwrap(), port);
+        server.stop().await;
     }
 
     // The extracted `process_connection` seam lets the framing → dispatch → write

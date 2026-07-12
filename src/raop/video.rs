@@ -5,7 +5,47 @@
 //! The application is responsible for decoding and rendering.
 
 use bytes::Bytes;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 use std::time::Instant;
+
+/// Control handle for restarting only the active AP2 video TCP stream.
+#[derive(Clone, Default)]
+pub struct VideoRestartHandle {
+    requested: Arc<AtomicBool>,
+    session_generation: Arc<AtomicU64>,
+}
+
+impl VideoRestartHandle {
+    /// Create a video restart control handle.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request the active video TCP connection to close and accept a new one.
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    /// Return the number of video TCP sessions accepted by the receiver.
+    pub fn session_generation(&self) -> u64 {
+        self.session_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_session_started(&self) {
+        self.session_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn take_request(&self) -> bool {
+        self.requested.swap(false, Ordering::AcqRel)
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+}
 
 /// Classification of a video packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -72,6 +72,8 @@ pub struct RaopServerBuilder {
     pin: Option<String>,
     #[cfg(feature = "video")]
     video_handler: Option<Arc<dyn crate::raop::video::VideoHandler>>,
+    #[cfg(feature = "video")]
+    video_restart: Option<crate::raop::video::VideoRestartHandle>,
     #[cfg(feature = "hls")]
     hls_handler: Option<Arc<dyn crate::raop::hls::HlsHandler>>,
 }
@@ -101,6 +103,8 @@ impl RaopServerBuilder {
             pin: None,
             #[cfg(feature = "video")]
             video_handler: None,
+            #[cfg(feature = "video")]
+            video_restart: None,
             #[cfg(feature = "hls")]
             hls_handler: None,
         }
@@ -188,6 +192,13 @@ impl RaopServerBuilder {
         self
     }
 
+    /// Set the control handle used to restart only the active video TCP stream.
+    #[cfg(feature = "video")]
+    pub fn video_restart_handle(mut self, handle: crate::raop::video::VideoRestartHandle) -> Self {
+        self.video_restart = Some(handle);
+        self
+    }
+
     #[cfg(feature = "hls")]
     /// Set an HLS handler for YouTube/video URL playback.
     pub fn hls_handler(mut self, handler: Arc<dyn crate::raop::hls::HlsHandler>) -> Self {
@@ -256,6 +267,8 @@ impl RaopServerBuilder {
             video_ekey: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "video")]
             video_eiv: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(feature = "video")]
+            video_restart: self.video_restart.unwrap_or_default(),
             #[cfg(feature = "ap2")]
             pairing_id,
             #[cfg(feature = "ap2")]
@@ -280,6 +293,8 @@ impl RaopServerBuilder {
             hwaddr,
             #[cfg(feature = "ap2")]
             mode: self.mode,
+            #[cfg(feature = "ap2")]
+            ptp_sink: None,
         })
     }
 }
@@ -298,6 +313,8 @@ pub struct RaopServer {
     hwaddr: Vec<u8>,
     #[cfg(feature = "ap2")]
     mode: AirPlayMode,
+    #[cfg(feature = "ap2")]
+    ptp_sink: Option<crate::net::ptp::PtpSink>,
 }
 
 impl RaopServer {
@@ -328,7 +345,9 @@ impl RaopServer {
                 feature_mask = format_args!("0x{:X},0x{:X}", features & 0xffff_ffff, features >> 32),
                 "AirPlay receiver advertisement profile"
             );
-            crate::net::ptp::spawn_ptp_sink().await;
+            if self.ptp_sink.is_none() {
+                self.ptp_sink = crate::net::ptp::spawn_ptp_sink().await;
+            }
         }
 
         if std::env::var("CI").is_err() {
@@ -357,6 +376,10 @@ impl RaopServer {
             mdns.unregister_airplay();
         }
         self.httpd.stop().await;
+        #[cfg(feature = "ap2")]
+        if let Some(ptp_sink) = self.ptp_sink.take() {
+            ptp_sink.stop().await;
+        }
     }
 
     /// Get the mDNS service info for this server.

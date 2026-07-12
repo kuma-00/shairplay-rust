@@ -844,8 +844,12 @@ fn setup_stream_video(
     tracing::info!(video_port, "Video stream TCP port opened");
 
     if let Some(vh) = &conn.shared.video_handler {
-        let session = vh.video_init();
-        tokio::spawn(crate::raop::video_stream::run(listener, cipher, session));
+        tokio::spawn(crate::raop::video_stream::run(
+            listener,
+            cipher,
+            vh.clone(),
+            conn.shared.video_restart.clone(),
+        ));
     }
 
     stream_resp.insert("dataPort".into(), plist::Value::Integer(video_port.into()));

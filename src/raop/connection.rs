@@ -38,6 +38,8 @@ pub(crate) struct RaopShared {
     pub(crate) video_ekey: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
     #[cfg(feature = "video")]
     pub(crate) video_eiv: Arc<std::sync::RwLock<Option<[u8; 16]>>>,
+    #[cfg(feature = "video")]
+    pub(crate) video_restart: crate::raop::video::VideoRestartHandle,
     #[cfg(feature = "ap2")]
     pub(crate) pairing_id: String,
     /// Accessory device id (`hwaddr_airplay(hwaddr)`), computed once at build.

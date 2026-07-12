@@ -10,6 +10,9 @@
 
 use std::sync::{Arc, RwLock};
 
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+
 use crate::util::now_ns;
 
 /// PTP message types (IEEE 1588).
@@ -148,30 +151,52 @@ pub fn parse_announce(buf: &[u8]) -> Option<u64> {
 /// failure it logs one line and returns, leaving normal operation untouched.
 /// IPv6-unspecified bind (AirPlay timing traffic is IPv6). Set `SHAIRPLAY_NO_PTP`
 /// to skip the bind (for A/B measuring the effect).
-pub(crate) async fn spawn_ptp_sink() {
+pub(crate) struct PtpSink {
+    shutdown_tx: watch::Sender<bool>,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl PtpSink {
+    pub(crate) async fn stop(self) {
+        let _ = self.shutdown_tx.send(true);
+        for task in self.tasks {
+            let _ = task.await;
+        }
+    }
+}
+
+pub(crate) async fn spawn_ptp_sink() -> Option<PtpSink> {
     if std::env::var("SHAIRPLAY_NO_PTP").is_ok() {
         tracing::info!("PTP sink disabled via SHAIRPLAY_NO_PTP — expect slow AP2 connect");
-        return;
+        return None;
     }
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut tasks = Vec::new();
     let mut bound = 0u8;
     for port in [319u16, 320u16] {
         match tokio::net::UdpSocket::bind((std::net::Ipv6Addr::UNSPECIFIED, port)).await {
             Ok(sock) => {
                 bound += 1;
                 let seen = seen.clone();
-                tokio::spawn(async move {
+                let mut shutdown = shutdown_rx.clone();
+                tasks.push(tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
                     loop {
-                        match sock.recv_from(&mut buf).await {
-                            Ok((n, from)) => log_ptp_packet(port, from, &buf[..n], &seen),
-                            Err(e) => {
-                                tracing::warn!(port, "PTP sink recv error: {e}");
-                                break;
+                        tokio::select! {
+                            result = sock.recv_from(&mut buf) => {
+                                match result {
+                                    Ok((n, from)) => log_ptp_packet(port, from, &buf[..n], &seen),
+                                    Err(e) => {
+                                        tracing::warn!(port, "PTP sink recv error: {e}");
+                                        break;
+                                    }
+                                }
                             }
+                            _ = shutdown.changed() => break,
                         }
                     }
-                });
+                }));
             }
             Err(e) => tracing::warn!(
                 port,
@@ -186,6 +211,7 @@ pub(crate) async fn spawn_ptp_sink() {
             "PTP sink active on 319/320 — accepting sender clock (keeps AP2 connect fast)"
         );
     }
+    (bound > 0).then_some(PtpSink { shutdown_tx, tasks })
 }
 
 /// Decode one inbound PTP datagram at `debug` (message type from the low nibble

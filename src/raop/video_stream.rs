@@ -3,6 +3,7 @@
 //! Accepts a TCP connection, reads 128-byte headers + variable-length payloads,
 //! classifies packets, decrypts Payload types, and delivers to VideoSession.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
@@ -11,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, trace, warn};
 
 use crate::crypto::video_cipher::VideoCipher;
-use crate::raop::video::{PacketKind, VideoPacket, VideoSession};
+use crate::raop::video::{PacketKind, VideoHandler, VideoPacket, VideoRestartHandle, VideoSession};
 
 const VIDEO_HEADER_LEN: usize = 128;
 const MAX_VIDEO_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
@@ -19,22 +20,44 @@ const MAX_VIDEO_PAYLOAD_LEN: usize = 32 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run the video stream receiver. Accepts one TCP connection and processes packets.
-pub(crate) async fn run(listener: TcpListener, cipher: VideoCipher, session: Box<dyn VideoSession>) {
-    let (stream, addr) = match listener.accept().await {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Video stream accept failed: {e}");
-            return;
+pub(crate) async fn run(
+    listener: TcpListener,
+    cipher: VideoCipher,
+    handler: Arc<dyn VideoHandler>,
+    restart: VideoRestartHandle,
+) {
+    let mut cipher = cipher;
+    loop {
+        if restart.take_request() {
+            info!("Video stream restart requested before accept");
         }
-    };
-    info!(%addr, "Video stream client connected");
-    process(stream, cipher, session).await;
+        let (stream, addr) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Video stream accept failed: {e}");
+                return;
+            }
+        };
+        info!(%addr, "Video stream client connected");
+        restart.mark_session_started();
+        let session = handler.video_init();
+        process(stream, &mut cipher, session, &restart).await;
+    }
 }
 
-async fn process(mut stream: TcpStream, mut cipher: VideoCipher, mut session: Box<dyn VideoSession>) {
+async fn process(
+    mut stream: TcpStream,
+    cipher: &mut VideoCipher,
+    mut session: Box<dyn VideoSession>,
+    restart: &VideoRestartHandle,
+) {
     let mut header = [0u8; VIDEO_HEADER_LEN];
 
     loop {
+        if restart.is_requested() {
+            info!("Video stream client disconnected for restart");
+            break;
+        }
         // Read 128-byte header
         match tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut header)).await {
             Ok(Ok(_)) => {}
