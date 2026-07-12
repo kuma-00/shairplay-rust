@@ -36,7 +36,7 @@ pub(crate) fn parse_receiver_profile(value: Option<&str>) -> ReceiverProfile {
             name: "airserver-full",
             model: "AppleTV6,2",
             srcvers: "375.3",
-            feature_override: Some(0x0004_000A_527D_5FD1),
+            feature_override: None,
         },
         _ => ReceiverProfile {
             name: "default",
@@ -124,7 +124,7 @@ mod status_flag_tests {
             ("AppleTV6,2", "375.3", None)
         );
         let full = parse_receiver_profile(Some("airserver-full"));
-        assert_eq!(full.feature_override, Some(0x0004_000A_527D_5FD1));
+        assert_eq!(full.feature_override, None);
         assert_eq!(parse_receiver_profile(Some("invalid")).name, "default");
     }
 }
