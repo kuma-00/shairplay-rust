@@ -32,8 +32,8 @@ do **not** delete them as "dead code"; they are unfinished AP2 capabilities.
   IEEE-1588 / Apple-aPTP client (Sync/Follow_Up/Announce parsing, `OffsetSmoother`,
   `PtpAnchor`). As of the fast-connect work a **PTP sink now runs**: `spawn_ptp_sink()`
   binds and drains ports 319/320 (IPv6-unspecified) so the sender no longer stalls on
-  ICMP port-unreachable — this is purely the connect-latency fix and can be disabled
-  with `SHAIRPLAY_NO_PTP`. What is still **not connected to playout** is the timing
+  ICMP port-unreachable — this is purely the connect-latency fix. What is still
+  **not connected to playout** is the timing
   itself: the parsed Follow_Up/Announce timestamps are only logged (`debug`) — no
   offset is computed and `PtpClock`/`OffsetSmoother` stay unused — so the receiver
   plays out on best-effort local timing and there is **no true clock sync and no

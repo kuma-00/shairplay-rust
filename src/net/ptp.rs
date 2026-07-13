@@ -149,8 +149,7 @@ pub fn parse_announce(buf: &[u8]) -> Option<u64> {
 /// Received messages are decoded at `debug`; the first is noted once at `info`.
 /// Binds gracefully — ports <1024 may need root / `CAP_NET_BIND_SERVICE`; on bind
 /// failure it logs one line and returns, leaving normal operation untouched.
-/// IPv6-unspecified bind (AirPlay timing traffic is IPv6). Set `SHAIRPLAY_NO_PTP`
-/// to skip the bind (for A/B measuring the effect).
+/// IPv6-unspecified bind (AirPlay timing traffic is IPv6).
 pub(crate) struct PtpSink {
     shutdown_tx: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -166,10 +165,6 @@ impl PtpSink {
 }
 
 pub(crate) async fn spawn_ptp_sink() -> Option<PtpSink> {
-    if std::env::var("SHAIRPLAY_NO_PTP").is_ok() {
-        tracing::info!("PTP sink disabled via SHAIRPLAY_NO_PTP — expect slow AP2 connect");
-        return None;
-    }
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = Vec::new();

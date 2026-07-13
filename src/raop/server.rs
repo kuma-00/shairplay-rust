@@ -324,9 +324,6 @@ impl RaopServer {
     }
 
     /// Start the server: bind ports, register mDNS services, begin accepting connections.
-    ///
-    /// mDNS registration is skipped when the `CI` environment variable is set
-    /// (Bonjour/Avahi is typically unavailable on CI runners).
     pub async fn start(&mut self) -> Result<(), ShairplayError> {
         let _actual_port = self.httpd.start(self.bind.port).await?;
 
@@ -350,16 +347,14 @@ impl RaopServer {
             }
         }
 
-        if std::env::var("CI").is_err() {
-            let info = self.service_info();
-            let mut mdns = MdnsService::new()?;
-            mdns.register_raop(&info)?;
-            #[cfg(feature = "ap2")]
-            if self.mode == AirPlayMode::AirPlay2 {
-                mdns.register_airplay(&info)?;
-            }
-            self.mdns = Some(mdns);
+        let info = self.service_info();
+        let mut mdns = MdnsService::new()?;
+        mdns.register_raop(&info)?;
+        #[cfg(feature = "ap2")]
+        if self.mode == AirPlayMode::AirPlay2 {
+            mdns.register_airplay(&info)?;
         }
+        self.mdns = Some(mdns);
 
         Ok(())
     }

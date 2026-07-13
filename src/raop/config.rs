@@ -24,32 +24,13 @@ pub(crate) struct ReceiverProfile {
 }
 
 #[cfg(feature = "ap2")]
-pub(crate) fn parse_receiver_profile(value: Option<&str>) -> ReceiverProfile {
-    match value {
-        Some("airserver-model") => ReceiverProfile {
-            name: "airserver-model",
-            model: "AppleTV6,2",
-            srcvers: "375.3",
-            feature_override: None,
-        },
-        Some("airserver-full") => ReceiverProfile {
-            name: "airserver-full",
-            model: "AppleTV6,2",
-            srcvers: "375.3",
-            feature_override: None,
-        },
-        _ => ReceiverProfile {
-            name: "default",
-            model: GLOBAL_MODEL,
-            srcvers: AP2_SRCVERS,
-            feature_override: None,
-        },
-    }
-}
-
-#[cfg(feature = "ap2")]
 pub(crate) fn receiver_profile() -> ReceiverProfile {
-    parse_receiver_profile(std::env::var("WAS_RECEIVER_PROFILE").ok().as_deref())
+    ReceiverProfile {
+        name: "default",
+        model: GLOBAL_MODEL,
+        srcvers: AP2_SRCVERS,
+        feature_override: None,
+    }
 }
 
 #[cfg(feature = "ap2")]
@@ -109,23 +90,6 @@ mod status_flag_tests {
             0x604,
             "PIN, paired (bits 9+10, like Apple TV)"
         );
-    }
-
-    #[test]
-    fn receiver_profiles_and_invalid_fallback_are_stable() {
-        let default = parse_receiver_profile(None);
-        assert_eq!(
-            (default.model, default.srcvers, default.feature_override),
-            ("AppleTV2,1", "366.0", None)
-        );
-        let model = parse_receiver_profile(Some("airserver-model"));
-        assert_eq!(
-            (model.model, model.srcvers, model.feature_override),
-            ("AppleTV6,2", "375.3", None)
-        );
-        let full = parse_receiver_profile(Some("airserver-full"));
-        assert_eq!(full.feature_override, None);
-        assert_eq!(parse_receiver_profile(Some("invalid")).name, "default");
     }
 }
 
