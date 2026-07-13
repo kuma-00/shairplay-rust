@@ -390,23 +390,6 @@ impl RaopBuffer {
             self.entries[idx].audio_buffer[i] = s as f32 / 32768.0;
         }
         self.entries[idx].audio_buffer_len = num_samples;
-        if self.packets_seen <= 5 || self.packets_seen.is_multiple_of(500) {
-            let peak = self.entries[idx].audio_buffer[..num_samples]
-                .iter()
-                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-            tracing::info!(
-                packets_seen = self.packets_seen,
-                decode_failures = self.decode_failures,
-                payload_len = payload.len(),
-                encrypted_len,
-                num_samples,
-                peak,
-                seqnum,
-                codec = codec_name,
-                "Legacy audio frame decoded"
-            );
-        }
-
         // Update buffer window.
         if self.is_empty {
             self.first_seqnum = seqnum;
