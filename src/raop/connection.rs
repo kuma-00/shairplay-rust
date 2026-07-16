@@ -33,6 +33,8 @@ pub(crate) struct RaopShared {
     pub(crate) pin: Option<String>,
     #[cfg(feature = "video")]
     pub(crate) video_handler: Option<Arc<dyn crate::raop::video::VideoHandler>>,
+    #[cfg(feature = "video")]
+    pub(crate) hevc_supported: bool,
     /// Shared video encryption keys — set by audio SETUP, read by video SETUP.
     #[cfg(feature = "video")]
     pub(crate) video_ekey: Arc<std::sync::RwLock<Option<[u8; 16]>>>,

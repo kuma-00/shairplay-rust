@@ -204,15 +204,14 @@ pub(crate) fn handle_info(
     dict.insert("macAddress".into(), plist::Value::String(hw));
     dict.insert("pi".into(), plist::Value::String(conn.shared.pairing_id.clone()));
     dict.insert("name".into(), plist::Value::String(conn.shared.airplay_name.clone()));
-    dict.insert(
-        "features".into(),
-        plist::Value::Integer(
-            (config::advertised_features(crate::net::features::receiver_features_for_pairing(
-                conn.shared.pin.is_some(),
-            )) as i64)
-                .into(),
-        ),
-    );
+    let mut features = config::advertised_features(crate::net::features::receiver_features_for_pairing(
+        conn.shared.pin.is_some(),
+    ));
+    #[cfg(feature = "video")]
+    if !conn.shared.hevc_supported {
+        features &= !(1u64 << 42);
+    }
+    dict.insert("features".into(), plist::Value::Integer((features as i64).into()));
     dict.insert("model".into(), plist::Value::String(profile.model.into()));
     dict.insert(
         "protocolVersion".into(),
@@ -231,20 +230,27 @@ pub(crate) fn handle_info(
     // Video: advertise a display so the iPhone offers screen mirroring
     #[cfg(feature = "video")]
     if conn.shared.video_handler.is_some() {
+        let (width, height, max_fps) = if conn.shared.hevc_supported {
+            (
+                config::HEVC_MIRRORING_WIDTH,
+                config::HEVC_MIRRORING_HEIGHT,
+                config::HEVC_MIRRORING_FPS,
+            )
+        } else {
+            (config::MIRRORING_WIDTH, config::MIRRORING_HEIGHT, config::MIRRORING_FPS)
+        };
+        tracing::info!(
+            hevc_supported = conn.shared.hevc_supported,
+            width,
+            height,
+            max_fps,
+            "AirPlay virtual display capability"
+        );
         let display = plist::Dictionary::from_iter([
-            (
-                "widthPixels".to_string(),
-                plist::Value::Integer(config::MIRRORING_WIDTH.into()),
-            ),
-            (
-                "heightPixels".to_string(),
-                plist::Value::Integer(config::MIRRORING_HEIGHT.into()),
-            ),
+            ("widthPixels".to_string(), plist::Value::Integer(width.into())),
+            ("heightPixels".to_string(), plist::Value::Integer(height.into())),
             ("uuid".to_string(), plist::Value::String(config::MIRRORING_UUID.into())),
-            (
-                "maxFPS".to_string(),
-                plist::Value::Integer(config::MIRRORING_FPS.into()),
-            ),
+            ("maxFPS".to_string(), plist::Value::Integer(max_fps.into())),
             (
                 "features".to_string(),
                 plist::Value::Integer(config::MIRRORING_FEATURES.into()),

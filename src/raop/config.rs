@@ -108,6 +108,13 @@ pub(crate) const MIRRORING_HEIGHT: i64 = 1080;
 #[cfg(feature = "video")]
 pub(crate) const MIRRORING_FPS: i64 = 60;
 
+#[cfg(feature = "video")]
+pub(crate) const HEVC_MIRRORING_WIDTH: i64 = 3840;
+#[cfg(feature = "video")]
+pub(crate) const HEVC_MIRRORING_HEIGHT: i64 = 2160;
+#[cfg(feature = "video")]
+pub(crate) const HEVC_MIRRORING_FPS: i64 = 30;
+
 /// Static UUID tag for the virtual display target.
 #[cfg(feature = "video")]
 pub(crate) const MIRRORING_UUID: &str = "shairplay_display";

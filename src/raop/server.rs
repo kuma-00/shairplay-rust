@@ -275,6 +275,8 @@ impl RaopServerBuilder {
             #[cfg(feature = "video")]
             video_handler: self.video_handler,
             #[cfg(feature = "video")]
+            hevc_supported: self.hevc_supported,
+            #[cfg(feature = "video")]
             video_ekey: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "video")]
             video_eiv: Arc::new(std::sync::RwLock::new(None)),
