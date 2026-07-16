@@ -183,6 +183,7 @@ pub(crate) fn receiver_features_for_pairing(requires_pin_pairing: bool) -> u64 {
             AudioFormats3,                     // bit 21
             AudioFormats4,                     // bit 22
             HasUnifiedAdvertiserInfo,          // bit 30
+            SupportsScreenMultiCodec,          // bit 42 — H.264 + HEVC screen mirroring
         ]);
         // Bits 10/12/13/25/28 have no public AirPlay-spec names — UxPlay sets them
         // empirically for legacy screen-mirroring compat. Kept as raw shifts
@@ -268,6 +269,6 @@ mod tests {
     #[test]
     #[cfg(feature = "video")]
     fn video_receiver_uses_uxplay_features() {
-        assert_eq!(receiver_features(), 0x527FFEE6);
+        assert_eq!(receiver_features(), 0x0000_0400_527F_FEE6);
     }
 }

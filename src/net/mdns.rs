@@ -77,6 +77,20 @@ pub struct AirPlayServiceInfo {
 }
 
 impl AirPlayServiceInfo {
+    #[cfg(feature = "video")]
+    pub(crate) fn set_hevc_supported(&mut self, supported: bool) {
+        let update = |records: &mut Vec<(String, String)>, key: &str| {
+            if let Some((_, value)) = records.iter_mut().find(|(name, _)| name == key) {
+                let mut features = super::features::receiver_features();
+                if !supported {
+                    features &= !(1u64 << 42);
+                }
+                *value = format!("0x{:X},0x{:X}", features & 0xffff_ffff, features >> 32);
+            }
+        };
+        update(&mut self.raop_txt, "ft");
+        update(&mut self.airplay_txt, "features");
+    }
     /// Create AP1 service info for mDNS registration.
     pub fn new(name: &str, port: u16, hwaddr: &[u8], password: bool) -> Self {
         let hw_raop = util::hwaddr_raop(hwaddr);
@@ -460,9 +474,28 @@ mod tests {
         let raop = |key: &str| info.raop_txt.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
         let airplay = |key: &str| info.airplay_txt.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
 
-        assert_eq!(raop("ft"), Some("0x527FFEE6,0x0"));
-        assert_eq!(airplay("features"), Some("0x527FFEE6,0x0"));
+        assert_eq!(raop("ft"), Some("0x527FFEE6,0x400"));
+        assert_eq!(airplay("features"), Some("0x527FFEE6,0x400"));
         assert_eq!(raop("sf"), Some("0x204"));
         assert_eq!(airplay("flags"), Some("0x204"));
+    }
+
+    #[test]
+    #[cfg(feature = "video")]
+    fn hevc_advertisement_can_be_disabled_at_runtime() {
+        let mut info =
+            AirPlayServiceInfo::new_airplay2("Test", 7000, &[2, 3, 4, 5, 6, 7], false, "abcd", "pi", false, false);
+        info.set_hevc_supported(false);
+        let value = |records: &[(String, String)], key: &str| {
+            records
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(value(&info.raop_txt, "ft"), Some("0x527FFEE6,0x0".into()));
+        assert_eq!(value(&info.airplay_txt, "features"), Some("0x527FFEE6,0x0".into()));
+        info.set_hevc_supported(true);
+        assert_eq!(value(&info.raop_txt, "ft"), Some("0x527FFEE6,0x400".into()));
+        assert_eq!(value(&info.airplay_txt, "features"), Some("0x527FFEE6,0x400".into()));
     }
 }

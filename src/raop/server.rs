@@ -74,6 +74,8 @@ pub struct RaopServerBuilder {
     video_handler: Option<Arc<dyn crate::raop::video::VideoHandler>>,
     #[cfg(feature = "video")]
     video_restart: Option<crate::raop::video::VideoRestartHandle>,
+    #[cfg(feature = "video")]
+    hevc_supported: bool,
     #[cfg(feature = "hls")]
     hls_handler: Option<Arc<dyn crate::raop::hls::HlsHandler>>,
 }
@@ -105,6 +107,8 @@ impl RaopServerBuilder {
             video_handler: None,
             #[cfg(feature = "video")]
             video_restart: None,
+            #[cfg(feature = "video")]
+            hevc_supported: false,
             #[cfg(feature = "hls")]
             hls_handler: None,
         }
@@ -196,6 +200,13 @@ impl RaopServerBuilder {
     #[cfg(feature = "video")]
     pub fn video_restart_handle(mut self, handle: crate::raop::video::VideoRestartHandle) -> Self {
         self.video_restart = Some(handle);
+        self
+    }
+
+    /// Advertise HEVC screen-mirroring support when the application has a usable decoder.
+    #[cfg(feature = "video")]
+    pub fn hevc_supported(mut self, supported: bool) -> Self {
+        self.hevc_supported = supported;
         self
     }
 
@@ -293,6 +304,8 @@ impl RaopServerBuilder {
             hwaddr,
             #[cfg(feature = "ap2")]
             mode: self.mode,
+            #[cfg(feature = "video")]
+            hevc_supported: self.hevc_supported,
             #[cfg(feature = "ap2")]
             ptp_sink: None,
         })
@@ -313,6 +326,8 @@ pub struct RaopServer {
     hwaddr: Vec<u8>,
     #[cfg(feature = "ap2")]
     mode: AirPlayMode,
+    #[cfg(feature = "video")]
+    hevc_supported: bool,
     #[cfg(feature = "ap2")]
     ptp_sink: Option<crate::net::ptp::PtpSink>,
 }
@@ -332,9 +347,13 @@ impl RaopServer {
         #[cfg(feature = "ap2")]
         if self.mode == AirPlayMode::AirPlay2 {
             let profile = crate::raop::config::receiver_profile();
-            let features = crate::raop::config::advertised_features(
+            let mut features = crate::raop::config::advertised_features(
                 crate::net::features::receiver_features_for_pairing(self.shared.pin.is_some()),
             );
+            #[cfg(feature = "video")]
+            if !self.hevc_supported {
+                features &= !(1u64 << 42);
+            }
             tracing::info!(
                 receiver_profile = profile.name,
                 model = profile.model,
@@ -385,7 +404,7 @@ impl RaopServer {
                 let (_, vk) = crate::crypto::pairing_homekit::identity_keypair(&self.shared.identity_seed);
                 let pk_hex: String = vk.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
                 let pi = self.shared.pairing_id.clone();
-                return AirPlayServiceInfo::new_airplay2(
+                let mut info = AirPlayServiceInfo::new_airplay2(
                     &self.name,
                     self.httpd.port(),
                     &self.hwaddr,
@@ -395,6 +414,9 @@ impl RaopServer {
                     self.shared.pin.is_some(),
                     self.shared.pairing_store.has_any_pairing(),
                 );
+                #[cfg(feature = "video")]
+                info.set_hevc_supported(self.hevc_supported);
+                return info;
             }
         }
         AirPlayServiceInfo::new(

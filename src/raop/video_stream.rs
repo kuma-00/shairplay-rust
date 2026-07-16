@@ -105,7 +105,7 @@ async fn process(
         // Classify packet
         let kind = match packet_type {
             1 => {
-                if payload.len() >= 8 && &payload[4..8] == b"hvc1" {
+                if payload.windows(4).any(|tag| matches!(tag, b"hvc1" | b"hev1" | b"hvcC")) {
                     PacketKind::HvcC
                 } else {
                     PacketKind::AvcC
