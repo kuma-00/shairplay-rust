@@ -22,6 +22,7 @@ pub(crate) struct RaopConnection {
     pub(crate) remote_addr: Vec<u8>,
     pub(crate) remote_socket: std::net::SocketAddr,
     pub(crate) nonce: String,
+    pub(crate) client_id: Option<String>,
     /// Cheap shared handle to server-wide config (identity, keys, handler, settings).
     /// Replaces the ~17 fields that were previously deep-copied into every connection.
     pub(crate) shared: Arc<crate::raop::connection::RaopShared>,
@@ -289,6 +290,9 @@ pub(crate) fn handle_setup(
 
     // Check for DACP remote control headers
     if let (Some(dacp_id), Some(active_remote)) = (request.header("DACP-ID"), request.header("Active-Remote")) {
+        let client_id = format!("dacp:{dacp_id}");
+        conn.client_id = Some(client_id.clone());
+        conn.shared.handler.on_client_identified(&client_id);
         let addr_bytes = crate::raop::rtp::remote_addr_bytes(&conn.remote_socket.ip().to_string());
         let remote = std::sync::Arc::new(crate::raop::DacpRemoteControl::new(dacp_id, active_remote, &addr_bytes));
         conn.shared.handler.on_remote_control(remote);
@@ -348,7 +352,7 @@ pub(crate) fn handle_record(
 
 /// RTSP GET_PARAMETER: return volume or other parameters.
 pub(crate) fn handle_get_parameter(
-    _conn: &mut RaopConnection,
+    conn: &mut RaopConnection,
     request: &HttpRequest,
     response: &mut HttpResponse,
 ) -> Option<Vec<u8>> {
@@ -361,7 +365,14 @@ pub(crate) fn handle_get_parameter(
     let text = std::str::from_utf8(data).ok()?;
     if text.contains("volume") {
         response.add_header("Content-Type", "text/parameters");
-        return Some(b"volume: 0.000000\r\n".to_vec());
+        let volume = conn
+            .shared
+            .handler
+            .current_volume(conn.client_id.as_deref())
+            .filter(|volume| volume.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-144.0, 0.0);
+        return Some(format!("volume: {volume:.6}\r\n").into_bytes());
     }
     None
 }
@@ -387,7 +398,7 @@ pub(crate) fn handle_set_parameter(
             let text = std::str::from_utf8(data).ok()?;
             if let Some(rest) = text.strip_prefix("volume: ") {
                 if let Ok(vol) = rest.trim().parse::<f32>() {
-                    conn.shared.handler.on_volume(vol);
+                    conn.shared.handler.on_client_volume(conn.client_id.as_deref(), vol);
                 }
             } else if let Some(rest) = text.strip_prefix("progress: ") {
                 let parts: Vec<&str> = rest.trim().split('/').collect();
@@ -458,6 +469,7 @@ mod tests {
             remote_addr: vec![127, 0, 0, 1],
             remote_socket: "127.0.0.1:5000".parse().unwrap(),
             nonce: String::new(),
+            client_id: None,
             shared,
         }
     }

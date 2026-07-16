@@ -88,6 +88,7 @@ impl HttpdCallbacks for RaopShared {
             remote_addr: remote_bytes,
             remote_socket: remote,
             nonce: digest::generate_nonce(MAX_NONCE_LEN),
+            client_id: None,
             #[cfg(feature = "ap2")]
             srp_server: None,
             #[cfg(feature = "ap2")]

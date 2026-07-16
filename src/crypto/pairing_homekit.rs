@@ -624,7 +624,7 @@ impl PairVerifyServer {
         &mut self,
         data: &[u8],
         lookup: PairingKeyLookup<'_>,
-    ) -> Result<Vec<u8>, CryptoError> {
+    ) -> Result<(Vec<u8>, String), CryptoError> {
         let tlv = TlvValues::decode(data).map_err(|e| CryptoError::PairingHandshake(e.to_string()))?;
         let enc = tlv
             .get_type(TlvType::EncryptedData)
@@ -643,9 +643,9 @@ impl PairVerifyServer {
             .get_type(TlvType::Signature)
             .ok_or_else(|| CryptoError::PairingHandshake("Verify M3: missing signature".into()))?;
 
+        let identifier = std::str::from_utf8(identifier)
+            .map_err(|_| CryptoError::PairingHandshake("Verify M3: invalid identifier encoding".into()))?;
         if let Some(lookup) = lookup {
-            let identifier = std::str::from_utf8(identifier)
-                .map_err(|_| CryptoError::PairingHandshake("Verify M3: invalid identifier encoding".into()))?;
             let ltpk = lookup(identifier).ok_or(CryptoError::PairingVerify)?;
             let mut info = Vec::new();
             info.extend_from_slice(&self.client_eph_pk);
@@ -672,7 +672,7 @@ impl PairVerifyServer {
 
         let mut resp = TlvValues::new();
         resp.add(TlvType::State as u8, &[4]);
-        Ok(resp.encode())
+        Ok((resp.encode(), identifier.to_owned()))
     }
 
     /// Returns the shared secret derived during pair-verify (for HKDF key derivation).
@@ -1006,7 +1006,8 @@ mod tests {
 
         let client_pk = *client_vk.as_bytes();
         let lookup = |id: &str| (id == client_id).then_some(client_pk);
-        let m4_data = server.process_m3_build_m4(&m3.encode(), Some(&lookup)).unwrap();
+        let (m4_data, verified_id) = server.process_m3_build_m4(&m3.encode(), Some(&lookup)).unwrap();
+        assert_eq!(verified_id, client_id);
         let m4 = TlvValues::decode(&m4_data).unwrap();
         assert_eq!(m4.get_type(TlvType::State), Some(&[4u8][..]));
 

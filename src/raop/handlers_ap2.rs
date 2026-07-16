@@ -97,6 +97,9 @@ pub(crate) fn handle_pair_setup(
                 Ok((client_id, client_pk)) => {
                     let m6 = srp.build_m6(&conn.shared.device_id, &conn.shared.identity_seed).ok()?;
                     conn.shared.pairing_store.put(&client_id, client_pk);
+                    let client_id = format!("pairing:{client_id}");
+                    conn.client_id = Some(client_id.clone());
+                    conn.shared.handler.on_client_identified(&client_id);
                     tracing::info!(client_id, "AP2 normal pair-setup complete, client key stored");
                     Some(m6)
                 }
@@ -160,10 +163,13 @@ pub(crate) fn handle_pair_verify(
             let pv = conn.pair_verify.as_mut()?;
             let store = conn.shared.pairing_store.clone();
             match pv.process_m3_build_m4(data, Some(&|id| store.get(id))) {
-                Ok(m4) => {
+                Ok((m4, client_id)) => {
                     conn.pair_verify_secret = pv.shared_secret().copied();
                     conn.ap2_shared_secret = pv.shared_secret().map(|s| s.to_vec());
                     conn.is_ap2 = true;
+                    let client_id = format!("pairing:{client_id}");
+                    conn.client_id = Some(client_id.clone());
+                    conn.shared.handler.on_client_identified(&client_id);
                     tracing::info!("AP2 pair-verify complete, encrypted RTSP active");
                     Some(m4)
                 }
@@ -383,6 +389,24 @@ fn setup_streams(conn: &mut RaopConnection, streams: &[plist::Value]) -> Option<
 fn setup_initial(conn: &mut RaopConnection, dict: &plist::Dictionary) -> Option<plist::Dictionary> {
     let mut resp_dict = plist::Dictionary::new();
     let timing = dict.get("timingProtocol").and_then(|v| v.as_string()).unwrap_or("None");
+
+    // UxPlay-style mirroring sessions commonly skip pair-verify and do not send
+    // DACP headers. Their initial SETUP still contains a stable sender deviceID,
+    // which must be captured before the immediately-following GET_PARAMETER.
+    if conn.client_id.is_none()
+        && let Some((kind, id)) = ["deviceID", "macAddress"].into_iter().find_map(|key| {
+            dict.get(key)
+                .and_then(|value| value.as_string())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(|id| (key, id))
+        })
+    {
+        let client_id = format!("device:{id}");
+        conn.client_id = Some(client_id.clone());
+        conn.shared.handler.on_client_identified(&client_id);
+        tracing::info!(source = kind, client_id, "AP2 client identified from SETUP");
+    }
 
     // Capture FairPlay encryption keys for video.
     // The audio connection provides ekey (72 bytes, FairPlay-encrypted) + eiv (16 bytes).

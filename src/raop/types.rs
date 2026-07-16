@@ -54,6 +54,16 @@ pub trait AudioHandler: Send + Sync + 'static {
 
     /// Volume change in dB (0.0 = max, -144.0 = mute).
     fn on_volume(&self, _volume: f32) {}
+    /// Volume change associated with a stable client identifier when available.
+    fn on_client_volume(&self, _client_id: Option<&str>, volume: f32) {
+        self.on_volume(volume);
+    }
+    /// Called once a connection obtains a stable, namespaced client identifier.
+    fn on_client_identified(&self, _client_id: &str) {}
+    /// Return receiver-side volume for the client, used by GET_PARAMETER.
+    fn current_volume(&self, _client_id: Option<&str>) -> Option<f32> {
+        None
+    }
     /// Track metadata (parsed from DMAP).
     fn on_metadata(&self, _metadata: &crate::proto::dmap::TrackMetadata) {}
     /// Album artwork (JPEG or PNG).
